@@ -114,8 +114,6 @@ export PRISMIC_UPLOAD_ROOT=/absolute/path/allowed-for-upload-files
 # Required for media tools and migration write tools
 export PRISMIC_WRITE_API_TOKEN=your-write-token
 
-# Optional legacy header for Migration API compatibility
-export PRISMIC_MIGRATION_API_KEY=your-migration-api-key
 ```
 
 ### Claude Desktop (local stdio)
@@ -246,7 +244,6 @@ Client docs:
 | `PRISMIC_CONTENT_API_TOKEN` | _none_ | No | Needed for private repos and often required to read non-master refs (preview/release) when API visibility is restricted. |
 | `PRISMIC_DISABLE_RAW_Q` | `false` | No | When true (`1/true`), rejects raw `q` predicates; only server-generated predicates (for example `type`) are allowed. |
 | `PRISMIC_WRITE_API_TOKEN` | _none_ | Media/Write | Required for media tools and Migration API write tools. |
-| `PRISMIC_MIGRATION_API_KEY` | _none_ | No | Optional legacy migration header; writes work without it. |
 | `PRISMIC_MIGRATION_API_BASE_URL` | `https://migration.prismic.io` | No | Optional Migration API override. |
 | `PRISMIC_ASSET_API_BASE_URL` | `https://asset-api.prismic.io` | No | Optional Asset API override. |
 | `PRISMIC_UPLOAD_ROOT` | _none_ | Media upload | Required for `prismic_add_media`; upload file paths must resolve within this directory. |

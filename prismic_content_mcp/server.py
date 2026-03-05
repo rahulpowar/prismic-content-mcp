@@ -469,6 +469,8 @@ def create_server(*, name: str = "prismic-content-mcp") -> FastMCP:
         `isMasterRef != true`.
         Use these refs with read tools (`ref` parameter) to inspect release
         content through Content API.
+        Note: querying documents with a release `ref` returns a content snapshot
+        at that ref, not only the release "planned items" shown in Prismic UI.
         Efficiency tip: pick the release `ref` once and reuse it across all read
         queries in the same analysis.
         """
@@ -499,6 +501,9 @@ def create_server(*, name: str = "prismic-content-mcp") -> FastMCP:
         `[document.first_publication_date desc]`).
         Use `routes` for Content API route resolvers to populate the `url` field
         (for example `[{"type":"page","path":"/:uid"}]`).
+        Note: there is no documented Content API `q` predicate for "published
+        status". A release `ref` query returns a version snapshot, not only
+        release-delta documents.
         Efficiency tips:
         - For large scans: call `prismic_get_refs` once and pass `ref` explicitly.
         - For counts/existence checks: set `page_size=1` and read `total_results`.
@@ -531,6 +536,16 @@ def create_server(*, name: str = "prismic-content-mcp") -> FastMCP:
         Use `ref` to read a specific preview/release version pointer. Depending
         on repository API visibility settings, non-master refs may require
         `PRISMIC_CONTENT_API_TOKEN`.
+        The document payload has no explicit `status` field (for example
+        published/draft/in-release). To determine publish state on master, use
+        this sequence:
+        1) Call `prismic_get_refs` and capture the `master` ref.
+        2) Call `prismic_get_document(..., ref=<master_ref>)`.
+        3) Call `prismic_get_document(..., ref=<release_ref>)` as needed.
+        4) Interpret results:
+           - exists on master: published on master
+           - missing on master but exists on release ref: not published on master
+             (release-only content)
         Prefer this over `prismic_get_documents` when you already have an exact
         id or type+uid target.
         """
