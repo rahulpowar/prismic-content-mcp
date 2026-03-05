@@ -114,7 +114,7 @@ export PRISMIC_UPLOAD_ROOT=/absolute/path/allowed-for-upload-files
 # Required for media tools and migration write tools
 export PRISMIC_WRITE_API_TOKEN=your-write-token
 
-# Required only for migration write tools
+# Optional legacy header for Migration API compatibility
 export PRISMIC_MIGRATION_API_KEY=your-migration-api-key
 ```
 
@@ -135,8 +135,7 @@ Edit `claude_desktop_config.json` and add:
       "env": {
         "PRISMIC_REPOSITORY": "your-repo",
         "PRISMIC_CONTENT_API_TOKEN": "your-content-token",
-        "PRISMIC_WRITE_API_TOKEN": "your-write-token",
-        "PRISMIC_MIGRATION_API_KEY": "your-migration-api-key"
+        "PRISMIC_WRITE_API_TOKEN": "your-write-token"
       }
     }
   }
@@ -186,7 +185,6 @@ codex mcp add \
   --env PRISMIC_REPOSITORY=your-repo \
   --env PRISMIC_CONTENT_API_TOKEN=your-content-token \
   --env PRISMIC_WRITE_API_TOKEN=your-write-token \
-  --env PRISMIC_MIGRATION_API_KEY=your-migration-api-key \
   prismic -- uvx --from git+https://github.com/rahulpowar/prismic-content-mcp.git prismic-content-mcp
 ```
 
@@ -220,7 +218,6 @@ claude mcp add \
   --env PRISMIC_REPOSITORY=your-repo \
   --env PRISMIC_CONTENT_API_TOKEN=your-content-token \
   --env PRISMIC_WRITE_API_TOKEN=your-write-token \
-  --env PRISMIC_MIGRATION_API_KEY=your-migration-api-key \
   prismic -- uvx --from git+https://github.com/rahulpowar/prismic-content-mcp.git prismic-content-mcp
 ```
 
@@ -249,7 +246,7 @@ Client docs:
 | `PRISMIC_CONTENT_API_TOKEN` | _none_ | No | Needed for private repos and often required to read non-master refs (preview/release) when API visibility is restricted. |
 | `PRISMIC_DISABLE_RAW_Q` | `false` | No | When true (`1/true`), rejects raw `q` predicates; only server-generated predicates (for example `type`) are allowed. |
 | `PRISMIC_WRITE_API_TOKEN` | _none_ | Media/Write | Required for media tools and Migration API write tools. |
-| `PRISMIC_MIGRATION_API_KEY` | _none_ | Write only | Required only for write tools. |
+| `PRISMIC_MIGRATION_API_KEY` | _none_ | No | Optional legacy migration header; writes work without it. |
 | `PRISMIC_MIGRATION_API_BASE_URL` | `https://migration.prismic.io` | No | Optional Migration API override. |
 | `PRISMIC_ASSET_API_BASE_URL` | `https://asset-api.prismic.io` | No | Optional Asset API override. |
 | `PRISMIC_UPLOAD_ROOT` | _none_ | Media upload | Required for `prismic_add_media`; upload file paths must resolve within this directory. |

@@ -235,7 +235,7 @@ class PrismicClientConfig:
 
     repository: str
     write_api_token: str
-    migration_api_key: str
+    migration_api_key: str | None
     content_api_token: str | None
     migration_api_base_url: str
     asset_api_base_url: str
@@ -265,7 +265,7 @@ class PrismicClientConfig:
         return cls(
             repository=repository,
             write_api_token=_read_env(source, "PRISMIC_WRITE_API_TOKEN"),
-            migration_api_key=_read_env(source, "PRISMIC_MIGRATION_API_KEY"),
+            migration_api_key=_read_env(source, "PRISMIC_MIGRATION_API_KEY") or None,
             content_api_token=content_api_token,
             migration_api_base_url=(
                 _read_env(source, "PRISMIC_MIGRATION_API_BASE_URL")
@@ -348,7 +348,7 @@ def _warn_and_validate_endpoint_overrides(
 
 
 def validate_required_credentials(config: PrismicClientConfig) -> None:
-    """Fail fast when mandatory credentials are missing."""
+    """Fail fast when mandatory write credentials are missing."""
 
     missing: list[str] = []
 
@@ -356,8 +356,6 @@ def validate_required_credentials(config: PrismicClientConfig) -> None:
         missing.append("PRISMIC_REPOSITORY")
     if not config.write_api_token:
         missing.append("PRISMIC_WRITE_API_TOKEN")
-    if not config.migration_api_key:
-        missing.append("PRISMIC_MIGRATION_API_KEY")
 
     if missing:
         required = ", ".join(missing)
@@ -491,11 +489,9 @@ class PrismicService:
 
     @staticmethod
     def _has_write_credentials(config: PrismicClientConfig) -> bool:
-        """Return True when all required write credentials are configured."""
+        """Return True when required write credentials are configured."""
 
-        return bool(
-            config.repository and config.write_api_token and config.migration_api_key
-        )
+        return bool(config.repository and config.write_api_token)
 
     @staticmethod
     def _has_asset_credentials(config: PrismicClientConfig) -> bool:
@@ -538,8 +534,10 @@ class PrismicService:
             "Content-Type": "application/json",
             "Repository": config.repository,
             "Authorization": f"Bearer {config.write_api_token}",
-            "X-Api-Key": config.migration_api_key,
         }
+        # Legacy compatibility: include API key header only when explicitly provided.
+        if config.migration_api_key:
+            headers["X-Api-Key"] = config.migration_api_key
 
         return httpx.AsyncClient(
             base_url=base_url,

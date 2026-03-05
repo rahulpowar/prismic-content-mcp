@@ -70,6 +70,23 @@ async def test_create_document_calls_post_documents_with_headers() -> None:
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_create_document_without_migration_api_key_still_works() -> None:
+    route = respx.post("https://migration.prismic.io/documents").mock(
+        return_value=httpx.Response(200, json={"id": "new-id"})
+    )
+
+    async with PrismicService(make_test_config(migration_api_key=None)) as service:
+        response = await service.create_document(make_document())
+
+    assert route.called
+    request = route.calls[0].request
+    assert request.headers["Repository"] == "demo-repo"
+    assert "X-Api-Key" not in request.headers
+    assert response["id"] == "new-id"
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_update_document_calls_put_documents_id() -> None:
     route = respx.put("https://migration.prismic.io/documents/doc-99").mock(
         return_value=httpx.Response(200, json={"id": "doc-99"})

@@ -250,6 +250,32 @@ async def test_get_repository_context_returns_non_secret_metadata() -> None:
     assert context["disable_raw_q"] is False
 
 
+@pytest.mark.asyncio
+async def test_repository_context_reports_write_enabled_without_migration_api_key() -> None:
+    config = PrismicClientConfig(
+        repository="demo-repo",
+        write_api_token="write-token",
+        migration_api_key=None,
+        content_api_token=None,
+        migration_api_base_url="https://migration.prismic.io",
+        asset_api_base_url="https://asset-api.prismic.io",
+        content_api_base_url="https://demo-repo.cdn.prismic.io/api/v2",
+        migration_min_interval_seconds=2.5,
+        retry_max_attempts=5,
+        write_type_allowlist=frozenset(),
+        max_batch_size=50,
+        enforce_trusted_endpoints=False,
+        upload_root=None,
+        disable_raw_q=False,
+    )
+    content_client = httpx.AsyncClient(base_url="https://demo-repo.cdn.prismic.io/api/v2")
+
+    async with PrismicService(config, content_client=content_client) as service:
+        context = service.get_repository_context()
+
+    assert context["has_write_credentials"] is True
+
+
 def test_validate_required_credentials_raises_for_missing_values() -> None:
     config = PrismicClientConfig(
         repository="",
@@ -274,7 +300,27 @@ def test_validate_required_credentials_raises_for_missing_values() -> None:
     message = str(exc.value)
     assert "PRISMIC_REPOSITORY" in message
     assert "PRISMIC_WRITE_API_TOKEN" in message
-    assert "PRISMIC_MIGRATION_API_KEY" in message
+
+
+def test_validate_required_credentials_allows_missing_migration_api_key() -> None:
+    config = PrismicClientConfig(
+        repository="demo-repo",
+        write_api_token="write-token",
+        migration_api_key=None,
+        content_api_token=None,
+        migration_api_base_url="https://migration.prismic.io",
+        asset_api_base_url="https://asset-api.prismic.io",
+        content_api_base_url="https://demo.cdn.prismic.io/api/v2",
+        migration_min_interval_seconds=2.5,
+        retry_max_attempts=5,
+        write_type_allowlist=frozenset(),
+        max_batch_size=50,
+        enforce_trusted_endpoints=False,
+        upload_root=None,
+        disable_raw_q=False,
+    )
+
+    validate_required_credentials(config)
 
 
 def test_validate_required_asset_credentials_raises_for_missing_values() -> None:
