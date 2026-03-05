@@ -6,12 +6,20 @@ import pytest
 
 from prismic_content_mcp.models import PrismicDocument
 from prismic_content_mcp.server import (
+    handle_prismic_get_custom_type,
+    handle_prismic_get_custom_types,
     handle_prismic_get_document,
     handle_prismic_get_documents,
     handle_prismic_get_repository_context,
     handle_prismic_get_releases,
     handle_prismic_get_refs,
+    handle_prismic_get_shared_slice,
+    handle_prismic_get_shared_slices,
     handle_prismic_get_types,
+    handle_prismic_insert_custom_type,
+    handle_prismic_insert_shared_slice,
+    handle_prismic_update_custom_type,
+    handle_prismic_update_shared_slice,
 )
 
 
@@ -26,6 +34,14 @@ class FakeContentService:
         self.types_requested = False
         self.releases_requested = False
         self.context_requested = False
+        self.custom_types_requested = False
+        self.custom_type_lookup: str | None = None
+        self.insert_custom_type_payload: dict[str, object] | None = None
+        self.update_custom_type_payload: dict[str, object] | None = None
+        self.shared_slices_requested = False
+        self.shared_slice_lookup: str | None = None
+        self.insert_shared_slice_payload: dict[str, object] | None = None
+        self.update_shared_slice_payload: dict[str, object] | None = None
 
     async def __aenter__(self) -> "FakeContentService":
         return self
@@ -110,12 +126,65 @@ class FakeContentService:
             }
         ]
 
+    async def get_all_custom_type_models(self):
+        self.custom_types_requested = True
+        return [{"id": "page", "label": "Page", "json": {"Main": {}}}]
+
+    async def get_custom_type_model(self, *, custom_type_id: str):
+        self.custom_type_lookup = custom_type_id
+        return {
+            "id": custom_type_id,
+            "label": "Page",
+            "repeatable": True,
+            "json": {
+                "Main": {
+                    "title": {
+                        "type": "StructuredText",
+                        "config": {"required": True, "label": "Title"},
+                    }
+                }
+            },
+        }
+
+    def summarize_custom_type_schema(self, custom_type: dict[str, object]):
+        return {
+            "id": custom_type.get("id"),
+            "tabs": [{"name": "Main", "fields": [{"api_id": "title", "required": True}]}],
+            "field_count": 1,
+            "shared_slice_count": 0,
+        }
+
+    async def insert_custom_type_model(self, *, custom_type: dict[str, object]):
+        self.insert_custom_type_payload = custom_type
+        return {"id": str(custom_type.get("id")), "status": "created", "raw": None}
+
+    async def update_custom_type_model(self, *, custom_type: dict[str, object]):
+        self.update_custom_type_payload = custom_type
+        return {"id": str(custom_type.get("id")), "status": "updated", "raw": None}
+
+    async def get_all_shared_slice_models(self):
+        self.shared_slices_requested = True
+        return [{"id": "hero_banner", "name": "Hero Banner"}]
+
+    async def get_shared_slice_model(self, *, slice_id: str):
+        self.shared_slice_lookup = slice_id
+        return {"id": slice_id, "name": "Hero Banner"}
+
+    async def insert_shared_slice_model(self, *, shared_slice: dict[str, object]):
+        self.insert_shared_slice_payload = shared_slice
+        return {"id": str(shared_slice.get("id")), "status": "created", "raw": None}
+
+    async def update_shared_slice_model(self, *, shared_slice: dict[str, object]):
+        self.update_shared_slice_payload = shared_slice
+        return {"id": str(shared_slice.get("id")), "status": "updated", "raw": None}
+
     def get_repository_context(self):
         self.context_requested = True
         return {
             "repository": "demo-repo",
             "content_api_base_url": "https://demo-repo.cdn.prismic.io/api/v2",
             "migration_api_base_url": "https://migration.prismic.io",
+            "custom_types_api_base_url": "https://customtypes.prismic.io",
             "has_content_api_token": False,
             "has_write_credentials": True,
         }
@@ -123,7 +192,6 @@ class FakeContentService:
 
 def make_content_service_factory(service: FakeContentService):
     def factory(*, require_write_credentials: bool = False):
-        assert require_write_credentials is False
         return service
 
     return factory
@@ -171,6 +239,114 @@ async def test_handle_get_types_returns_types_array() -> None:
 
 
 @pytest.mark.asyncio
+async def test_handle_get_custom_types_returns_models() -> None:
+    service = FakeContentService()
+
+    result = await handle_prismic_get_custom_types(
+        service_factory=make_content_service_factory(service),
+    )
+
+    assert service.custom_types_requested is True
+    assert result["custom_types"][0]["id"] == "page"
+
+
+@pytest.mark.asyncio
+async def test_handle_get_custom_type_returns_schema_summary() -> None:
+    service = FakeContentService()
+
+    result = await handle_prismic_get_custom_type(
+        custom_type_id="page",
+        include_schema_summary=True,
+        service_factory=make_content_service_factory(service),
+    )
+
+    assert service.custom_type_lookup == "page"
+    assert result["custom_type"]["id"] == "page"
+    assert result["schema"]["field_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_insert_custom_type_forwards_payload() -> None:
+    service = FakeContentService()
+    payload = {"id": "landing_page", "label": "Landing Page", "json": {"Main": {}}}
+
+    result = await handle_prismic_insert_custom_type(
+        custom_type=payload,
+        service_factory=make_content_service_factory(service),
+    )
+
+    assert service.insert_custom_type_payload == payload
+    assert result["status"] == "created"
+
+
+@pytest.mark.asyncio
+async def test_handle_update_custom_type_forwards_payload() -> None:
+    service = FakeContentService()
+    payload = {"id": "landing_page", "label": "Landing Page", "json": {"Main": {}}}
+
+    result = await handle_prismic_update_custom_type(
+        custom_type=payload,
+        service_factory=make_content_service_factory(service),
+    )
+
+    assert service.update_custom_type_payload == payload
+    assert result["status"] == "updated"
+
+
+@pytest.mark.asyncio
+async def test_handle_get_shared_slices_returns_models() -> None:
+    service = FakeContentService()
+
+    result = await handle_prismic_get_shared_slices(
+        service_factory=make_content_service_factory(service),
+    )
+
+    assert service.shared_slices_requested is True
+    assert result["shared_slices"][0]["id"] == "hero_banner"
+
+
+@pytest.mark.asyncio
+async def test_handle_get_shared_slice_returns_model() -> None:
+    service = FakeContentService()
+
+    result = await handle_prismic_get_shared_slice(
+        slice_id="hero_banner",
+        service_factory=make_content_service_factory(service),
+    )
+
+    assert service.shared_slice_lookup == "hero_banner"
+    assert result["shared_slice"]["id"] == "hero_banner"
+
+
+@pytest.mark.asyncio
+async def test_handle_insert_shared_slice_forwards_payload() -> None:
+    service = FakeContentService()
+    payload = {"id": "hero_banner", "name": "Hero Banner", "variations": []}
+
+    result = await handle_prismic_insert_shared_slice(
+        shared_slice=payload,
+        service_factory=make_content_service_factory(service),
+    )
+
+    assert service.insert_shared_slice_payload == payload
+    assert result["status"] == "created"
+
+
+@pytest.mark.asyncio
+async def test_handle_update_shared_slice_forwards_payload() -> None:
+    service = FakeContentService()
+    payload = {"id": "hero_banner", "name": "Hero Banner", "variations": []}
+
+    result = await handle_prismic_update_shared_slice(
+        shared_slice=payload,
+        service_factory=make_content_service_factory(service),
+    )
+
+    assert service.update_shared_slice_payload == payload
+    assert result["status"] == "updated"
+
+
+@pytest.mark.asyncio
 async def test_handle_get_repository_context_returns_context() -> None:
     service = FakeContentService()
 
@@ -181,6 +357,7 @@ async def test_handle_get_repository_context_returns_context() -> None:
     assert service.context_requested is True
     assert result["context"]["repository"] == "demo-repo"
     assert result["context"]["content_api_base_url"] == "https://demo-repo.cdn.prismic.io/api/v2"
+    assert result["context"]["custom_types_api_base_url"] == "https://customtypes.prismic.io"
     assert result["context"]["has_write_credentials"] is True
 
 

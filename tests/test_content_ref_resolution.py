@@ -22,6 +22,7 @@ def make_config(**overrides: object) -> PrismicClientConfig:
         "content_api_token": None,
         "migration_api_base_url": "https://migration.prismic.io",
         "asset_api_base_url": "https://asset-api.prismic.io",
+        "custom_types_api_base_url": "https://customtypes.prismic.io",
         "content_api_base_url": "https://demo-repo.cdn.prismic.io/api/v2",
         "migration_min_interval_seconds": 0.01,
         "retry_max_attempts": 3,

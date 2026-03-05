@@ -16,6 +16,7 @@ Use these directly in your LLM client once this MCP is connected:
 
 - `Show the Prismic repository context and tell me which repo this MCP is configured for.`
 - `List all content types (custom types) with their IDs and labels.`
+- `Fetch the page custom type schema and show fields, required flags, and configured slices.`
 - `List repository refs and identify the master ref.`
 - `List release refs and summarize each release name + ref.`
 - `List the top 10 longest articles, excluding a specific type like page guides.`
@@ -34,6 +35,7 @@ Use these directly in your LLM client once this MCP is connected:
 
 - Read tools for listing and fetching documents
 - Read tools for refs, releases, and custom types
+- Custom Types API tools for shared slices and full page-type model management
 - Media tools for listing and uploading assets
 - Write tools for single and batch upsert
 - Safer write behavior with:
@@ -48,7 +50,7 @@ Use these directly in your LLM client once this MCP is connected:
 
 - Python `3.10+`
 - A Prismic repository
-- For write operations only: Migration API credentials
+- For media, custom types, and migration write tools: Prismic write API token
 
 ## Install
 
@@ -243,9 +245,10 @@ Client docs:
 | `PRISMIC_DOCUMENT_API_URL` | Derived from repository | No | Optional override for Content API base URL. |
 | `PRISMIC_CONTENT_API_TOKEN` | _none_ | No | Needed for private repos and often required to read non-master refs (preview/release) when API visibility is restricted. |
 | `PRISMIC_DISABLE_RAW_Q` | `false` | No | When true (`1/true`), rejects raw `q` predicates; only server-generated predicates (for example `type`) are allowed. |
-| `PRISMIC_WRITE_API_TOKEN` | _none_ | Media/Write | Required for media tools and Migration API write tools. |
+| `PRISMIC_WRITE_API_TOKEN` | _none_ | CustomTypes/Media/Write | Required for Custom Types API tools, media tools, and Migration API write tools. |
 | `PRISMIC_MIGRATION_API_BASE_URL` | `https://migration.prismic.io` | No | Optional Migration API override. |
 | `PRISMIC_ASSET_API_BASE_URL` | `https://asset-api.prismic.io` | No | Optional Asset API override. |
+| `PRISMIC_CUSTOM_TYPES_API_BASE_URL` | `https://customtypes.prismic.io` | No | Optional Custom Types API override. |
 | `PRISMIC_UPLOAD_ROOT` | _none_ | Media upload | Required for `prismic_add_media`; upload file paths must resolve within this directory. |
 | `PRISMIC_ENFORCE_TRUSTED_ENDPOINTS` | `false` | No | When true (`1/true`), startup fails if endpoint override env vars point to non-`*.prismic.io` hosts. |
 
@@ -285,8 +288,8 @@ If you prefer, you may explicitly set `PRISMIC_DOCUMENT_API_URL` and skip deriva
 Security behavior for endpoint overrides:
 
 - Non-Prismic overrides for `PRISMIC_DOCUMENT_API_URL`,
-  `PRISMIC_MIGRATION_API_BASE_URL`, or `PRISMIC_ASSET_API_BASE_URL` emit a
-  startup warning.
+  `PRISMIC_MIGRATION_API_BASE_URL`, `PRISMIC_ASSET_API_BASE_URL`, or
+  `PRISMIC_CUSTOM_TYPES_API_BASE_URL` emit a startup warning.
 - Set `PRISMIC_ENFORCE_TRUSTED_ENDPOINTS=1` to block startup on such overrides.
 
 ## MCP Tools
@@ -305,9 +308,11 @@ Example output shape:
     "content_api_base_url": "https://your-repo.cdn.prismic.io/api/v2",
     "migration_api_base_url": "https://migration.prismic.io",
     "asset_api_base_url": "https://asset-api.prismic.io",
+    "custom_types_api_base_url": "https://customtypes.prismic.io",
     "has_content_api_token": false,
     "has_write_credentials": true,
-    "has_asset_credentials": true
+    "has_asset_credentials": true,
+    "has_custom_types_credentials": true
   }
 }
 ```
@@ -383,6 +388,75 @@ Example output shape:
   ]
 }
 ```
+
+### `prismic_get_custom_types`
+
+List full custom type models from the Prismic Custom Types API (`GET /customtypes`).
+
+Requires:
+
+- `PRISMIC_REPOSITORY`
+- `PRISMIC_WRITE_API_TOKEN`
+
+Returns:
+
+- `custom_types`: array of full custom type JSON models.
+
+### `prismic_get_custom_type`
+
+Fetch one custom type model by id (`GET /customtypes/{id}`).
+
+Inputs:
+
+- `custom_type_id` (required)
+- `include_schema_summary` (default: `true`)
+
+When `include_schema_summary=true`, response includes:
+
+- `schema.tabs[].fields[]` with field `type` and full `config`
+- `required` flags where present in field config
+- `shared_slices` extracted from Slices field choices
+
+Use this to verify page-type schema (fields, slices, config, required flags).
+
+### `prismic_insert_custom_type`
+
+Insert a new custom type model (`POST /customtypes/insert`).
+
+Input:
+
+- `custom_type`: full custom type JSON model (must include `id`).
+
+### `prismic_update_custom_type`
+
+Update an existing custom type model (`POST /customtypes/update`).
+
+Input:
+
+- `custom_type`: full updated custom type JSON model (must include `id`).
+
+Recommended sequence:
+
+1. `prismic_get_custom_type`
+2. edit JSON model
+3. `prismic_update_custom_type`
+4. `prismic_get_custom_type` to verify
+
+### `prismic_get_shared_slices`
+
+List shared slice models from Custom Types API (`GET /slices`).
+
+### `prismic_get_shared_slice`
+
+Fetch one shared slice model by id (`GET /slices/{id}`).
+
+### `prismic_insert_shared_slice`
+
+Insert a new shared slice model (`POST /slices/insert`).
+
+### `prismic_update_shared_slice`
+
+Update an existing shared slice model (`POST /slices/update`).
 
 ### `prismic_get_documents`
 
@@ -594,7 +668,8 @@ Important behavior:
 
 ## Error and Safety Behavior
 
-- Read tools do not require write credentials.
+- Content API read tools do not require write credentials.
+- Custom Types API tools (including read calls) require write credentials.
 - Write tools fail fast if write credentials are missing.
 - Write retries only on `429`, `503`, `504` with exponential backoff + jitter.
 - Non-retryable `4xx` errors fail immediately.

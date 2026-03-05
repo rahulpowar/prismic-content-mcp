@@ -207,6 +207,117 @@ async def handle_prismic_get_releases(
     return {"releases": releases}
 
 
+async def handle_prismic_get_custom_types(
+    *,
+    service_factory: ServiceFactory = _build_service,
+) -> dict[str, Any]:
+    """Return full Custom Type models from Prismic Custom Types API."""
+
+    async with service_factory(require_write_credentials=True) as service:
+        custom_types = await service.get_all_custom_type_models()
+
+    return {"custom_types": custom_types}
+
+
+async def handle_prismic_get_custom_type(
+    *,
+    custom_type_id: str,
+    include_schema_summary: bool = True,
+    service_factory: ServiceFactory = _build_service,
+) -> dict[str, Any]:
+    """Return one Custom Type model with optional normalized schema summary."""
+
+    async with service_factory(require_write_credentials=True) as service:
+        custom_type = await service.get_custom_type_model(custom_type_id=custom_type_id)
+        schema = (
+            service.summarize_custom_type_schema(custom_type)
+            if include_schema_summary
+            else None
+        )
+
+    response: dict[str, Any] = {"custom_type": custom_type}
+    if schema is not None:
+        response["schema"] = schema
+    return response
+
+
+async def handle_prismic_insert_custom_type(
+    *,
+    custom_type: dict[str, Any],
+    service_factory: ServiceFactory = _build_service,
+) -> dict[str, Any]:
+    """Insert a Custom Type model via Prismic Custom Types API."""
+
+    async with service_factory(require_write_credentials=True) as service:
+        result = await service.insert_custom_type_model(custom_type=custom_type)
+
+    return result
+
+
+async def handle_prismic_update_custom_type(
+    *,
+    custom_type: dict[str, Any],
+    service_factory: ServiceFactory = _build_service,
+) -> dict[str, Any]:
+    """Update a Custom Type model via Prismic Custom Types API."""
+
+    async with service_factory(require_write_credentials=True) as service:
+        result = await service.update_custom_type_model(custom_type=custom_type)
+
+    return result
+
+
+async def handle_prismic_get_shared_slices(
+    *,
+    service_factory: ServiceFactory = _build_service,
+) -> dict[str, Any]:
+    """Return all Shared Slice models from Prismic Custom Types API."""
+
+    async with service_factory(require_write_credentials=True) as service:
+        shared_slices = await service.get_all_shared_slice_models()
+
+    return {"shared_slices": shared_slices}
+
+
+async def handle_prismic_get_shared_slice(
+    *,
+    slice_id: str,
+    service_factory: ServiceFactory = _build_service,
+) -> dict[str, Any]:
+    """Return one Shared Slice model by ID from Prismic Custom Types API."""
+
+    async with service_factory(require_write_credentials=True) as service:
+        shared_slice = await service.get_shared_slice_model(slice_id=slice_id)
+
+    return {"shared_slice": shared_slice}
+
+
+async def handle_prismic_insert_shared_slice(
+    *,
+    shared_slice: dict[str, Any],
+    service_factory: ServiceFactory = _build_service,
+) -> dict[str, Any]:
+    """Insert a Shared Slice model via Prismic Custom Types API."""
+
+    async with service_factory(require_write_credentials=True) as service:
+        result = await service.insert_shared_slice_model(shared_slice=shared_slice)
+
+    return result
+
+
+async def handle_prismic_update_shared_slice(
+    *,
+    shared_slice: dict[str, Any],
+    service_factory: ServiceFactory = _build_service,
+) -> dict[str, Any]:
+    """Update a Shared Slice model via Prismic Custom Types API."""
+
+    async with service_factory(require_write_credentials=True) as service:
+        result = await service.update_shared_slice_model(shared_slice=shared_slice)
+
+    return result
+
+
 async def handle_prismic_get_documents(
     *,
     type: str | None = None,
@@ -476,6 +587,105 @@ def create_server(*, name: str = "prismic-content-mcp") -> FastMCP:
         """
 
         return await handle_prismic_get_releases()
+
+    @server.tool(name="prismic_get_custom_types")
+    async def prismic_get_custom_types() -> dict[str, Any]:
+        """List full Custom Type models from Prismic Custom Types API.
+
+        Uses `GET /customtypes` on `https://customtypes.prismic.io` (override via
+        `PRISMIC_CUSTOM_TYPES_API_BASE_URL`).
+        Requires:
+        - `PRISMIC_REPOSITORY`
+        - `PRISMIC_WRITE_API_TOKEN`
+        """
+
+        return await handle_prismic_get_custom_types()
+
+    @server.tool(name="prismic_get_custom_type")
+    async def prismic_get_custom_type(
+        custom_type_id: str,
+        include_schema_summary: bool = True,
+    ) -> dict[str, Any]:
+        """Get one Custom Type model and schema summary by ID.
+
+        Uses `GET /customtypes/{id}`.
+        When `include_schema_summary=true`, returns:
+        - tab/field breakdown
+        - field `config` for each field
+        - `required` flags where present in field config
+        - shared slice choices configured inside Slices fields
+
+        This is the recommended verification call after create/update operations.
+        """
+
+        return await handle_prismic_get_custom_type(
+            custom_type_id=custom_type_id,
+            include_schema_summary=include_schema_summary,
+        )
+
+    @server.tool(name="prismic_insert_custom_type")
+    async def prismic_insert_custom_type(custom_type: dict[str, Any]) -> dict[str, Any]:
+        """Insert a new Custom Type model.
+
+        Uses `POST /customtypes/insert`.
+        Pass a full Custom Type JSON model (including `id`, `label`, `repeatable`,
+        and `json` tabs/fields).
+        """
+
+        return await handle_prismic_insert_custom_type(custom_type=custom_type)
+
+    @server.tool(name="prismic_update_custom_type")
+    async def prismic_update_custom_type(custom_type: dict[str, Any]) -> dict[str, Any]:
+        """Update an existing Custom Type model.
+
+        Uses `POST /customtypes/update`.
+        Pass the full updated Custom Type JSON model.
+        Typical sequence:
+        1) `prismic_get_custom_type`
+        2) edit model JSON
+        3) `prismic_update_custom_type`
+        4) `prismic_get_custom_type` to verify schema
+        """
+
+        return await handle_prismic_update_custom_type(custom_type=custom_type)
+
+    @server.tool(name="prismic_get_shared_slices")
+    async def prismic_get_shared_slices() -> dict[str, Any]:
+        """List all Shared Slice models from Prismic Custom Types API.
+
+        Uses `GET /slices`.
+        """
+
+        return await handle_prismic_get_shared_slices()
+
+    @server.tool(name="prismic_get_shared_slice")
+    async def prismic_get_shared_slice(slice_id: str) -> dict[str, Any]:
+        """Get one Shared Slice model by ID.
+
+        Uses `GET /slices/{id}`.
+        """
+
+        return await handle_prismic_get_shared_slice(slice_id=slice_id)
+
+    @server.tool(name="prismic_insert_shared_slice")
+    async def prismic_insert_shared_slice(shared_slice: dict[str, Any]) -> dict[str, Any]:
+        """Insert a new Shared Slice model.
+
+        Uses `POST /slices/insert`.
+        Pass a full Shared Slice JSON model.
+        """
+
+        return await handle_prismic_insert_shared_slice(shared_slice=shared_slice)
+
+    @server.tool(name="prismic_update_shared_slice")
+    async def prismic_update_shared_slice(shared_slice: dict[str, Any]) -> dict[str, Any]:
+        """Update an existing Shared Slice model.
+
+        Uses `POST /slices/update`.
+        Pass the full updated Shared Slice JSON model.
+        """
+
+        return await handle_prismic_update_shared_slice(shared_slice=shared_slice)
 
     @server.tool(name="prismic_get_documents")
     async def prismic_get_documents(

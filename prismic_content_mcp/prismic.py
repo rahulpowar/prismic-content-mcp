@@ -22,6 +22,7 @@ from .models import DocumentWrite, PrismicDocument
 
 DEFAULT_MIGRATION_API_BASE_URL = "https://migration.prismic.io"
 DEFAULT_ASSET_API_BASE_URL = "https://asset-api.prismic.io"
+DEFAULT_CUSTOM_TYPES_API_BASE_URL = "https://customtypes.prismic.io"
 DEFAULT_MIGRATION_MIN_INTERVAL_SECONDS = 2.5
 DEFAULT_RETRY_MAX_ATTEMPTS = 5
 DEFAULT_MAX_BATCH_SIZE = 50
@@ -239,6 +240,7 @@ class PrismicClientConfig:
     content_api_token: str | None
     migration_api_base_url: str
     asset_api_base_url: str
+    custom_types_api_base_url: str
     content_api_base_url: str
     migration_min_interval_seconds: float
     retry_max_attempts: int
@@ -274,6 +276,10 @@ class PrismicClientConfig:
             asset_api_base_url=(
                 _read_env(source, "PRISMIC_ASSET_API_BASE_URL")
                 or DEFAULT_ASSET_API_BASE_URL
+            ),
+            custom_types_api_base_url=(
+                _read_env(source, "PRISMIC_CUSTOM_TYPES_API_BASE_URL")
+                or DEFAULT_CUSTOM_TYPES_API_BASE_URL
             ),
             content_api_base_url=content_api_url,
             migration_min_interval_seconds=_read_float_env(
@@ -322,6 +328,9 @@ def _warn_and_validate_endpoint_overrides(
             env, "PRISMIC_MIGRATION_API_BASE_URL"
         ),
         "PRISMIC_ASSET_API_BASE_URL": _read_env(env, "PRISMIC_ASSET_API_BASE_URL"),
+        "PRISMIC_CUSTOM_TYPES_API_BASE_URL": _read_env(
+            env, "PRISMIC_CUSTOM_TYPES_API_BASE_URL"
+        ),
     }
 
     untrusted_overrides: list[str] = []
@@ -366,6 +375,23 @@ def validate_required_credentials(config: PrismicClientConfig) -> None:
 
 def validate_required_asset_credentials(config: PrismicClientConfig) -> None:
     """Fail fast when required Asset API credentials are missing."""
+
+    missing: list[str] = []
+
+    if not config.repository:
+        missing.append("PRISMIC_REPOSITORY")
+    if not config.write_api_token:
+        missing.append("PRISMIC_WRITE_API_TOKEN")
+
+    if missing:
+        required = ", ".join(missing)
+        raise PrismicConfigurationError(
+            f"Missing required environment variables: {required}"
+        )
+
+
+def validate_required_custom_types_credentials(config: PrismicClientConfig) -> None:
+    """Fail fast when required Custom Types API credentials are missing."""
 
     missing: list[str] = []
 
@@ -449,12 +475,14 @@ class PrismicService:
         content_client: httpx.AsyncClient | None = None,
         migration_client: httpx.AsyncClient | None = None,
         asset_client: httpx.AsyncClient | None = None,
+        custom_types_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.config = config
         self._timeout_seconds = timeout_seconds
         self._owns_content_client = content_client is None
         self._owns_migration_client = False
         self._owns_asset_client = False
+        self._owns_custom_types_client = False
         self._content_ref: str | None = None
         self._content_ref_lock = asyncio.Lock()
         self._migration_limiter = AsyncLimiter(
@@ -486,6 +514,16 @@ class PrismicService:
                 self._owns_asset_client = True
         else:
             self._owns_asset_client = False
+        self._custom_types_client = custom_types_client
+        if self._custom_types_client is None:
+            if self._has_custom_types_credentials(config):
+                self._custom_types_client = self._build_custom_types_client(
+                    config=config,
+                    timeout_seconds=timeout_seconds,
+                )
+                self._owns_custom_types_client = True
+        else:
+            self._owns_custom_types_client = False
 
     @staticmethod
     def _has_write_credentials(config: PrismicClientConfig) -> bool:
@@ -496,6 +534,12 @@ class PrismicService:
     @staticmethod
     def _has_asset_credentials(config: PrismicClientConfig) -> bool:
         """Return True when required Asset API credentials are configured."""
+
+        return bool(config.repository and config.write_api_token)
+
+    @staticmethod
+    def _has_custom_types_credentials(config: PrismicClientConfig) -> bool:
+        """Return True when required Custom Types API credentials are configured."""
 
         return bool(config.repository and config.write_api_token)
 
@@ -567,6 +611,30 @@ class PrismicService:
             timeout=timeout_seconds,
         )
 
+    @staticmethod
+    def _build_custom_types_client(
+        *,
+        config: PrismicClientConfig,
+        timeout_seconds: float,
+    ) -> httpx.AsyncClient:
+        validate_required_custom_types_credentials(config)
+        base_url = (
+            config.custom_types_api_base_url.strip()
+            or DEFAULT_CUSTOM_TYPES_API_BASE_URL
+        )
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Repository": config.repository,
+            "Authorization": f"Bearer {config.write_api_token}",
+        }
+
+        return httpx.AsyncClient(
+            base_url=base_url,
+            headers=headers,
+            timeout=timeout_seconds,
+        )
+
     @property
     def content_client(self) -> httpx.AsyncClient:
         """Configured Content API client."""
@@ -585,6 +653,12 @@ class PrismicService:
 
         return self._ensure_asset_client()
 
+    @property
+    def custom_types_client(self) -> httpx.AsyncClient:
+        """Configured Custom Types API client."""
+
+        return self._ensure_custom_types_client()
+
     async def __aenter__(self) -> "PrismicService":
         return self
 
@@ -600,6 +674,8 @@ class PrismicService:
             await self._migration_client.aclose()
         if self._owns_asset_client and self._asset_client is not None:
             await self._asset_client.aclose()
+        if self._owns_custom_types_client and self._custom_types_client is not None:
+            await self._custom_types_client.aclose()
 
     def _ensure_migration_client(self) -> httpx.AsyncClient:
         """Return migration client, constructing it when write creds are present."""
@@ -630,6 +706,20 @@ class PrismicService:
         )
         self._owns_asset_client = True
         return self._asset_client
+
+    def _ensure_custom_types_client(self) -> httpx.AsyncClient:
+        """Return Custom Types client, constructing it when credentials are present."""
+
+        if self._custom_types_client is not None:
+            return self._custom_types_client
+
+        validate_required_custom_types_credentials(self.config)
+        self._custom_types_client = self._build_custom_types_client(
+            config=self.config,
+            timeout_seconds=self._timeout_seconds,
+        )
+        self._owns_custom_types_client = True
+        return self._custom_types_client
 
     @staticmethod
     def _compose_query_param(
@@ -927,15 +1017,21 @@ class PrismicService:
             self.config.migration_api_base_url.strip() or DEFAULT_MIGRATION_API_BASE_URL
         )
         asset_api_base_url = self.config.asset_api_base_url.strip() or DEFAULT_ASSET_API_BASE_URL
+        custom_types_api_base_url = (
+            self.config.custom_types_api_base_url.strip()
+            or DEFAULT_CUSTOM_TYPES_API_BASE_URL
+        )
 
         return {
             "repository": self.config.repository or None,
             "content_api_base_url": content_api_base_url,
             "migration_api_base_url": migration_api_base_url,
             "asset_api_base_url": asset_api_base_url,
+            "custom_types_api_base_url": custom_types_api_base_url,
             "has_content_api_token": bool(self.config.content_api_token),
             "has_write_credentials": self._has_write_credentials(self.config),
             "has_asset_credentials": self._has_asset_credentials(self.config),
+            "has_custom_types_credentials": self._has_custom_types_credentials(self.config),
             "endpoint_trust": {
                 "content": {
                     "host": _extract_url_host(content_api_base_url) or None,
@@ -949,9 +1045,277 @@ class PrismicService:
                     "host": _extract_url_host(asset_api_base_url) or None,
                     "is_trusted": is_trusted_prismic_url(asset_api_base_url),
                 },
+                "custom_types": {
+                    "host": _extract_url_host(custom_types_api_base_url) or None,
+                    "is_trusted": is_trusted_prismic_url(custom_types_api_base_url),
+                },
             },
             "upload_root_configured": bool(self.config.upload_root),
             "disable_raw_q": self.config.disable_raw_q,
+        }
+
+    @staticmethod
+    def _normalize_model_list(payload: Any, *, label: str) -> list[dict[str, Any]]:
+        """Normalize a JSON array of API models."""
+
+        if not isinstance(payload, list):
+            raise ValueError(f"{label} response must be a JSON array")
+
+        normalized: list[dict[str, Any]] = []
+        for entry in payload:
+            if not isinstance(entry, Mapping):
+                raise ValueError(f"{label} response contains non-object entries")
+            normalized.append(dict(entry))
+        return normalized
+
+    @staticmethod
+    def _normalize_model_object(payload: Any, *, label: str) -> dict[str, Any]:
+        """Normalize a JSON object API model."""
+
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"{label} response must be a JSON object")
+        return dict(payload)
+
+    @staticmethod
+    async def _parse_json_or_none(response: httpx.Response) -> Any | None:
+        """Best-effort parse for success responses that may not include a body."""
+
+        if not response.content:
+            return None
+        try:
+            return response.json()
+        except ValueError:
+            return None
+
+    async def get_all_custom_type_models(self) -> list[dict[str, Any]]:
+        """List all Custom Type models from the Custom Types API."""
+
+        client = self._ensure_custom_types_client()
+        response = await client.get("customtypes")
+        payload = await self.ensure_success(response)
+        return self._normalize_model_list(payload, label="Custom Types API customtypes")
+
+    async def get_custom_type_model(self, *, custom_type_id: str) -> dict[str, Any]:
+        """Fetch one Custom Type model by ID from the Custom Types API."""
+
+        lookup_id = _ensure_non_empty(custom_type_id, "custom_type_id")
+        client = self._ensure_custom_types_client()
+        response = await client.get(f"customtypes/{lookup_id}")
+        payload = await self.ensure_success(response)
+        return self._normalize_model_object(
+            payload,
+            label="Custom Types API customtypes/{id}",
+        )
+
+    async def insert_custom_type_model(
+        self,
+        *,
+        custom_type: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Insert a Custom Type model via Custom Types API `POST /customtypes/insert`."""
+
+        custom_type_payload = self._normalize_model_object(
+            custom_type,
+            label="custom_type",
+        )
+        raw_custom_type_id = custom_type_payload.get("id")
+        if not isinstance(raw_custom_type_id, str):
+            raise ValueError("custom_type.id must be a non-empty string")
+        custom_type_id = _ensure_non_empty(raw_custom_type_id, "custom_type.id")
+        client = self._ensure_custom_types_client()
+        response = await client.post("customtypes/insert", json=custom_type_payload)
+        if not response.is_success:
+            raise PrismicApiError.from_response(response)
+        return {
+            "id": custom_type_id,
+            "status": "created",
+            "raw": await self._parse_json_or_none(response),
+        }
+
+    async def update_custom_type_model(
+        self,
+        *,
+        custom_type: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Update a Custom Type model via Custom Types API `POST /customtypes/update`."""
+
+        custom_type_payload = self._normalize_model_object(
+            custom_type,
+            label="custom_type",
+        )
+        raw_custom_type_id = custom_type_payload.get("id")
+        if not isinstance(raw_custom_type_id, str):
+            raise ValueError("custom_type.id must be a non-empty string")
+        custom_type_id = _ensure_non_empty(raw_custom_type_id, "custom_type.id")
+        client = self._ensure_custom_types_client()
+        response = await client.post("customtypes/update", json=custom_type_payload)
+        if not response.is_success:
+            raise PrismicApiError.from_response(response)
+        return {
+            "id": custom_type_id,
+            "status": "updated",
+            "raw": await self._parse_json_or_none(response),
+        }
+
+    async def get_all_shared_slice_models(self) -> list[dict[str, Any]]:
+        """List all Shared Slice models from the Custom Types API."""
+
+        client = self._ensure_custom_types_client()
+        response = await client.get("slices")
+        payload = await self.ensure_success(response)
+        return self._normalize_model_list(payload, label="Custom Types API slices")
+
+    async def get_shared_slice_model(self, *, slice_id: str) -> dict[str, Any]:
+        """Fetch one Shared Slice model by ID from the Custom Types API."""
+
+        lookup_id = _ensure_non_empty(slice_id, "slice_id")
+        client = self._ensure_custom_types_client()
+        response = await client.get(f"slices/{lookup_id}")
+        payload = await self.ensure_success(response)
+        return self._normalize_model_object(
+            payload,
+            label="Custom Types API slices/{id}",
+        )
+
+    async def insert_shared_slice_model(
+        self,
+        *,
+        shared_slice: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Insert a Shared Slice model via Custom Types API `POST /slices/insert`."""
+
+        slice_payload = self._normalize_model_object(
+            shared_slice,
+            label="shared_slice",
+        )
+        raw_slice_id = slice_payload.get("id")
+        if not isinstance(raw_slice_id, str):
+            raise ValueError("shared_slice.id must be a non-empty string")
+        slice_id = _ensure_non_empty(raw_slice_id, "shared_slice.id")
+        client = self._ensure_custom_types_client()
+        response = await client.post("slices/insert", json=slice_payload)
+        if not response.is_success:
+            raise PrismicApiError.from_response(response)
+        return {
+            "id": slice_id,
+            "status": "created",
+            "raw": await self._parse_json_or_none(response),
+        }
+
+    async def update_shared_slice_model(
+        self,
+        *,
+        shared_slice: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Update a Shared Slice model via Custom Types API `POST /slices/update`."""
+
+        slice_payload = self._normalize_model_object(
+            shared_slice,
+            label="shared_slice",
+        )
+        raw_slice_id = slice_payload.get("id")
+        if not isinstance(raw_slice_id, str):
+            raise ValueError("shared_slice.id must be a non-empty string")
+        slice_id = _ensure_non_empty(raw_slice_id, "shared_slice.id")
+        client = self._ensure_custom_types_client()
+        response = await client.post("slices/update", json=slice_payload)
+        if not response.is_success:
+            raise PrismicApiError.from_response(response)
+        return {
+            "id": slice_id,
+            "status": "updated",
+            "raw": await self._parse_json_or_none(response),
+        }
+
+    @staticmethod
+    def summarize_custom_type_schema(custom_type: Mapping[str, Any]) -> dict[str, Any]:
+        """Build a schema-centric view of a Custom Type model."""
+
+        model = PrismicService._normalize_model_object(
+            custom_type,
+            label="custom_type",
+        )
+        tabs_raw = model.get("json")
+        if not isinstance(tabs_raw, Mapping):
+            raise ValueError("custom_type.json must be an object")
+
+        tabs_summary: list[dict[str, Any]] = []
+        total_fields = 0
+        total_slices = 0
+
+        for tab_name, tab_fields in tabs_raw.items():
+            if not isinstance(tab_name, str) or not tab_name.strip():
+                raise ValueError("custom_type.json contains an invalid tab name")
+            if not isinstance(tab_fields, Mapping):
+                raise ValueError("custom_type.json tab entries must be objects")
+
+            fields_summary: list[dict[str, Any]] = []
+            for api_id, field_model in tab_fields.items():
+                if not isinstance(api_id, str) or not api_id.strip():
+                    raise ValueError("custom_type fields contain an invalid field id")
+                if not isinstance(field_model, Mapping):
+                    raise ValueError("custom_type fields must be objects")
+
+                field_type = field_model.get("type")
+                field_config = field_model.get("config")
+                normalized_config: Any = (
+                    dict(field_config) if isinstance(field_config, Mapping) else field_config
+                )
+
+                field_summary: dict[str, Any] = {
+                    "api_id": api_id,
+                    "type": field_type,
+                    "config": normalized_config,
+                }
+
+                if (
+                    isinstance(field_config, Mapping)
+                    and isinstance(field_config.get("required"), bool)
+                ):
+                    field_summary["required"] = field_config["required"]
+
+                if field_type == "Slices" and isinstance(field_config, Mapping):
+                    choices = field_config.get("choices")
+                    if isinstance(choices, Mapping):
+                        shared_slices: list[dict[str, Any]] = []
+                        for shared_slice_id, shared_slice_model in choices.items():
+                            if not isinstance(shared_slice_id, str):
+                                continue
+                            if not isinstance(shared_slice_model, Mapping):
+                                continue
+
+                            shared_slice_entry: dict[str, Any] = {
+                                "id": shared_slice_id,
+                                "type": shared_slice_model.get("type"),
+                                "fieldset": shared_slice_model.get("fieldset"),
+                                "description": shared_slice_model.get("description"),
+                                "icon": shared_slice_model.get("icon"),
+                            }
+                            variations = shared_slice_model.get("variations")
+                            if isinstance(variations, list):
+                                shared_slice_entry["variations"] = [
+                                    dict(item) if isinstance(item, Mapping) else item
+                                    for item in variations
+                                ]
+                            shared_slices.append(shared_slice_entry)
+
+                        field_summary["shared_slices"] = shared_slices
+                        total_slices += len(shared_slices)
+
+                fields_summary.append(field_summary)
+                total_fields += 1
+
+            tabs_summary.append({"name": tab_name, "fields": fields_summary})
+
+        return {
+            "id": model.get("id"),
+            "label": model.get("label"),
+            "repeatable": model.get("repeatable"),
+            "status": model.get("status"),
+            "format": model.get("format"),
+            "tabs": tabs_summary,
+            "field_count": total_fields,
+            "shared_slice_count": total_slices,
         }
 
     def validate_write_document(self, document: DocumentWrite) -> None:

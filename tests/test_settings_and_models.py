@@ -16,6 +16,7 @@ from prismic_content_mcp.prismic import (
     load_prismic_client_config,
     sanitize_url_query_parameters,
     validate_required_asset_credentials,
+    validate_required_custom_types_credentials,
     validate_required_credentials,
 )
 
@@ -33,6 +34,7 @@ def test_load_prismic_client_config_derives_default_content_url() -> None:
     assert config.content_api_base_url == "https://demo-repo.cdn.prismic.io/api/v2"
     assert config.migration_api_base_url == "https://migration.prismic.io"
     assert config.asset_api_base_url == "https://asset-api.prismic.io"
+    assert config.custom_types_api_base_url == "https://customtypes.prismic.io"
     assert config.migration_min_interval_seconds == 2.5
     assert config.retry_max_attempts == 5
     assert config.max_batch_size == 50
@@ -82,6 +84,18 @@ def test_load_prismic_client_config_defaults_blank_asset_base_url() -> None:
     )
 
     assert config.asset_api_base_url == "https://asset-api.prismic.io"
+
+
+def test_load_prismic_client_config_defaults_blank_custom_types_base_url() -> None:
+    config = load_prismic_client_config(
+        env={
+            "PRISMIC_REPOSITORY": "demo-repo",
+            "PRISMIC_WRITE_API_TOKEN": "write-token",
+            "PRISMIC_CUSTOM_TYPES_API_BASE_URL": "   ",
+        }
+    )
+
+    assert config.custom_types_api_base_url == "https://customtypes.prismic.io"
 
 
 def test_load_prismic_client_config_respects_document_api_url_override() -> None:
@@ -196,6 +210,7 @@ async def test_build_content_client_derives_base_url_when_content_url_blank() ->
         content_api_token=None,
         migration_api_base_url="https://migration.prismic.io",
         asset_api_base_url="https://asset-api.prismic.io",
+        custom_types_api_base_url="https://customtypes.prismic.io",
         content_api_base_url="   ",
         migration_min_interval_seconds=2.5,
         retry_max_attempts=5,
@@ -222,6 +237,7 @@ async def test_get_repository_context_returns_non_secret_metadata() -> None:
         content_api_token="content-token",
         migration_api_base_url="https://migration.prismic.io",
         asset_api_base_url="https://asset-api.prismic.io",
+        custom_types_api_base_url="https://customtypes.prismic.io",
         content_api_base_url="https://demo-repo.cdn.prismic.io/api/v2",
         migration_min_interval_seconds=2.5,
         retry_max_attempts=5,
@@ -240,12 +256,15 @@ async def test_get_repository_context_returns_non_secret_metadata() -> None:
     assert context["content_api_base_url"] == "https://demo-repo.cdn.prismic.io/api/v2"
     assert context["migration_api_base_url"] == "https://migration.prismic.io"
     assert context["asset_api_base_url"] == "https://asset-api.prismic.io"
+    assert context["custom_types_api_base_url"] == "https://customtypes.prismic.io"
     assert context["has_content_api_token"] is True
     assert context["has_write_credentials"] is False
     assert context["has_asset_credentials"] is False
+    assert context["has_custom_types_credentials"] is False
     assert context["endpoint_trust"]["content"]["is_trusted"] is True
     assert context["endpoint_trust"]["migration"]["is_trusted"] is True
     assert context["endpoint_trust"]["asset"]["is_trusted"] is True
+    assert context["endpoint_trust"]["custom_types"]["is_trusted"] is True
     assert context["upload_root_configured"] is False
     assert context["disable_raw_q"] is False
 
@@ -259,6 +278,7 @@ async def test_repository_context_reports_write_enabled_without_migration_api_ke
         content_api_token=None,
         migration_api_base_url="https://migration.prismic.io",
         asset_api_base_url="https://asset-api.prismic.io",
+        custom_types_api_base_url="https://customtypes.prismic.io",
         content_api_base_url="https://demo-repo.cdn.prismic.io/api/v2",
         migration_min_interval_seconds=2.5,
         retry_max_attempts=5,
@@ -284,6 +304,7 @@ def test_validate_required_credentials_raises_for_missing_values() -> None:
         content_api_token=None,
         migration_api_base_url="https://migration.prismic.io",
         asset_api_base_url="https://asset-api.prismic.io",
+        custom_types_api_base_url="https://customtypes.prismic.io",
         content_api_base_url="https://demo.cdn.prismic.io/api/v2",
         migration_min_interval_seconds=2.5,
         retry_max_attempts=5,
@@ -310,6 +331,7 @@ def test_validate_required_credentials_allows_missing_migration_api_key() -> Non
         content_api_token=None,
         migration_api_base_url="https://migration.prismic.io",
         asset_api_base_url="https://asset-api.prismic.io",
+        custom_types_api_base_url="https://customtypes.prismic.io",
         content_api_base_url="https://demo.cdn.prismic.io/api/v2",
         migration_min_interval_seconds=2.5,
         retry_max_attempts=5,
@@ -331,6 +353,7 @@ def test_validate_required_asset_credentials_raises_for_missing_values() -> None
         content_api_token=None,
         migration_api_base_url="https://migration.prismic.io",
         asset_api_base_url="https://asset-api.prismic.io",
+        custom_types_api_base_url="https://customtypes.prismic.io",
         content_api_base_url="https://demo.cdn.prismic.io/api/v2",
         migration_min_interval_seconds=2.5,
         retry_max_attempts=5,
@@ -343,6 +366,33 @@ def test_validate_required_asset_credentials_raises_for_missing_values() -> None
 
     with pytest.raises(PrismicConfigurationError) as exc:
         validate_required_asset_credentials(config)
+
+    message = str(exc.value)
+    assert "PRISMIC_REPOSITORY" in message
+    assert "PRISMIC_WRITE_API_TOKEN" in message
+
+
+def test_validate_required_custom_types_credentials_raises_for_missing_values() -> None:
+    config = PrismicClientConfig(
+        repository="",
+        write_api_token="",
+        migration_api_key="migration-key",
+        content_api_token=None,
+        migration_api_base_url="https://migration.prismic.io",
+        asset_api_base_url="https://asset-api.prismic.io",
+        custom_types_api_base_url="https://customtypes.prismic.io",
+        content_api_base_url="https://demo.cdn.prismic.io/api/v2",
+        migration_min_interval_seconds=2.5,
+        retry_max_attempts=5,
+        write_type_allowlist=frozenset(),
+        max_batch_size=50,
+        enforce_trusted_endpoints=False,
+        upload_root=None,
+        disable_raw_q=False,
+    )
+
+    with pytest.raises(PrismicConfigurationError) as exc:
+        validate_required_custom_types_credentials(config)
 
     message = str(exc.value)
     assert "PRISMIC_REPOSITORY" in message

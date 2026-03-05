@@ -17,6 +17,7 @@
 .beads/.local_version
 .beads/.sync.lock
 .beads/export-state/
+.beads/backup/
 .beads/redirect
 .beads/ephemeral.sqlite3
 .beads/ephemeral.sqlite3-journal
