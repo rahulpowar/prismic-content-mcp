@@ -8,7 +8,11 @@ import httpx
 import pytest
 import respx
 
-from prismic_content_mcp.prismic import PrismicClientConfig, PrismicService
+from prismic_content_mcp.prismic import (
+    PrismicClientConfig,
+    PrismicConfigurationError,
+    PrismicService,
+)
 from prismic_content_mcp.server import handle_prismic_add_media, handle_prismic_get_media
 
 
@@ -25,6 +29,9 @@ def make_config(**overrides) -> PrismicClientConfig:
         "retry_max_attempts": 3,
         "write_type_allowlist": frozenset(),
         "max_batch_size": 50,
+        "enforce_trusted_endpoints": False,
+        "upload_root": None,
+        "disable_raw_q": False,
     }
     defaults.update(overrides)
     return PrismicClientConfig(**defaults)
@@ -72,7 +79,7 @@ async def test_add_media_posts_multipart_with_optional_metadata(tmp_path: Path) 
         )
     )
 
-    async with PrismicService(make_config()) as service:
+    async with PrismicService(make_config(upload_root=str(tmp_path))) as service:
         payload = await service.add_media(
             file_path=str(file_path),
             notes="hero note",
@@ -93,11 +100,77 @@ async def test_add_media_posts_multipart_with_optional_metadata(tmp_path: Path) 
     assert payload["id"] == "asset-99"
 
 
+@respx.mock
+@pytest.mark.asyncio
+async def test_add_media_accepts_relative_path_within_upload_root(tmp_path: Path) -> None:
+    file_path = tmp_path / "nested" / "hero.png"
+    file_path.parent.mkdir(parents=True)
+    file_path.write_bytes(b"png-bytes")
+
+    route = respx.post("https://asset-api.prismic.io/assets").mock(
+        return_value=httpx.Response(200, json={"id": "asset-2"})
+    )
+
+    async with PrismicService(make_config(upload_root=str(tmp_path))) as service:
+        payload = await service.add_media(file_path="nested/hero.png")
+
+    assert route.called
+    assert payload["id"] == "asset-2"
+
+
 @pytest.mark.asyncio
 async def test_add_media_raises_for_missing_file() -> None:
-    async with PrismicService(make_config()) as service:
-        with pytest.raises(FileNotFoundError):
+    async with PrismicService(make_config(upload_root="/tmp")) as service:
+        with pytest.raises(ValueError, match="does not exist within PRISMIC_UPLOAD_ROOT"):
             await service.add_media(file_path="/path/that/does/not/exist.png")
+
+
+@pytest.mark.asyncio
+async def test_add_media_requires_upload_root_configuration(tmp_path: Path) -> None:
+    file_path = tmp_path / "hero.png"
+    file_path.write_bytes(b"png-bytes")
+
+    async with PrismicService(make_config(upload_root=None)) as service:
+        with pytest.raises(PrismicConfigurationError, match="PRISMIC_UPLOAD_ROOT is required"):
+            await service.add_media(file_path=str(file_path))
+
+
+@pytest.mark.asyncio
+async def test_add_media_blocks_path_outside_upload_root(tmp_path: Path) -> None:
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+
+    async with PrismicService(make_config(upload_root=str(upload_root))) as service:
+        with pytest.raises(ValueError, match="inside PRISMIC_UPLOAD_ROOT"):
+            await service.add_media(file_path=str(outside))
+
+
+@pytest.mark.asyncio
+async def test_add_media_blocks_symlink_escape(tmp_path: Path) -> None:
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+    symlink_path = upload_root / "escape.txt"
+    symlink_path.symlink_to(outside)
+
+    async with PrismicService(make_config(upload_root=str(upload_root))) as service:
+        with pytest.raises(ValueError, match="inside PRISMIC_UPLOAD_ROOT"):
+            await service.add_media(file_path=str(symlink_path))
+
+
+@pytest.mark.asyncio
+async def test_add_media_blocks_relative_traversal(tmp_path: Path) -> None:
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+
+    async with PrismicService(make_config(upload_root=str(upload_root))) as service:
+        with pytest.raises(ValueError, match="inside PRISMIC_UPLOAD_ROOT"):
+            await service.add_media(file_path="../outside.txt")
 
 
 class FakeMediaService:

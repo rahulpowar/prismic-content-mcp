@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import random
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 import httpx
 from aiolimiter import AsyncLimiter
@@ -28,6 +30,11 @@ CONTENT_SEARCH_ENDPOINT = "documents/search"
 MIGRATION_DOCUMENTS_ENDPOINT = "documents"
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
+DEFAULT_ENFORCE_TRUSTED_ENDPOINTS = False
+DEFAULT_DISABLE_RAW_Q = False
+SENSITIVE_QUERY_PARAM_NAMES = frozenset(
+    {"access_token", "token", "api_key", "key", "authorization"}
+)
 MIGRATION_WRITE_FIELD_ALLOWLIST = {
     "id",
     "title",
@@ -37,6 +44,8 @@ MIGRATION_WRITE_FIELD_ALLOWLIST = {
     "alternate_language_id",
     "data",
 }
+
+logger = logging.getLogger(__name__)
 
 
 class PrismicConfigurationError(ValueError):
@@ -74,7 +83,7 @@ class PrismicApiError(RuntimeError):
 
         return cls(
             status_code=response.status_code,
-            url=str(response.request.url),
+            url=sanitize_url_query_parameters(str(response.request.url)),
             response_text=response.text,
             response_json=response_json,
         )
@@ -132,6 +141,76 @@ def _read_csv_set_env(env: Mapping[str, str], key: str) -> frozenset[str]:
     return frozenset(normalized)
 
 
+def _read_bool_env(env: Mapping[str, str], key: str, default: bool = False) -> bool:
+    """Read boolean settings with common truthy/falsey string forms."""
+
+    raw_value = _read_env(env, key)
+    if not raw_value:
+        return default
+
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+
+    raise PrismicConfigurationError(
+        f"{key} must be one of: 1,true,yes,on,0,false,no,off"
+    )
+
+
+def _extract_url_host(url: str) -> str:
+    """Extract normalized hostname from URL-like input."""
+
+    normalized = url.strip()
+    if not normalized:
+        return ""
+    parsed = urlsplit(normalized if "://" in normalized else f"//{normalized}")
+    return (parsed.hostname or "").strip().lower().rstrip(".")
+
+
+def is_trusted_prismic_url(url: str) -> bool:
+    """Return True when URL host belongs to prismic.io."""
+
+    host = _extract_url_host(url)
+    if not host:
+        return False
+    return host == "prismic.io" or host.endswith(".prismic.io")
+
+
+def sanitize_url_query_parameters(url: str) -> str:
+    """Redact sensitive query-parameter values from a URL string."""
+
+    if not url:
+        return url
+
+    try:
+        split = urlsplit(url)
+        if not split.query:
+            return url
+
+        redacted_pairs: list[tuple[str, str]] = []
+        for key, value in parse_qsl(split.query, keep_blank_values=True):
+            if key.strip().lower() in SENSITIVE_QUERY_PARAM_NAMES:
+                redacted_pairs.append((key, "[REDACTED]"))
+            else:
+                redacted_pairs.append((key, value))
+
+        new_query = urlencode(redacted_pairs, doseq=True)
+        return urlunsplit(
+            (
+                split.scheme,
+                split.netloc,
+                split.path,
+                new_query,
+                split.fragment,
+            )
+        )
+    except Exception:
+        # Keep error surfaces resilient if URL parsing fails unexpectedly.
+        return url
+
+
 def build_default_document_api_url(repository: str) -> str:
     """Build Content API v2 URL from repository name."""
 
@@ -165,6 +244,9 @@ class PrismicClientConfig:
     retry_max_attempts: int
     write_type_allowlist: frozenset[str]
     max_batch_size: int
+    enforce_trusted_endpoints: bool
+    upload_root: str | None
+    disable_raw_q: bool
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "PrismicClientConfig":
@@ -178,6 +260,7 @@ class PrismicClientConfig:
             content_api_url = build_default_document_api_url(repository)
 
         content_api_token = _read_env(source, "PRISMIC_CONTENT_API_TOKEN") or None
+        upload_root = _read_env(source, "PRISMIC_UPLOAD_ROOT") or None
 
         return cls(
             repository=repository,
@@ -212,6 +295,55 @@ class PrismicClientConfig:
                 "PRISMIC_MAX_BATCH_SIZE",
                 DEFAULT_MAX_BATCH_SIZE,
             ),
+            enforce_trusted_endpoints=_read_bool_env(
+                source,
+                "PRISMIC_ENFORCE_TRUSTED_ENDPOINTS",
+                DEFAULT_ENFORCE_TRUSTED_ENDPOINTS,
+            ),
+            upload_root=upload_root,
+            disable_raw_q=_read_bool_env(
+                source,
+                "PRISMIC_DISABLE_RAW_Q",
+                DEFAULT_DISABLE_RAW_Q,
+            ),
+        )
+
+
+def _warn_and_validate_endpoint_overrides(
+    *,
+    config: PrismicClientConfig,
+    env: Mapping[str, str],
+) -> None:
+    """Warn (or fail in strict mode) on non-Prismic endpoint overrides."""
+
+    overrides = {
+        "PRISMIC_DOCUMENT_API_URL": _read_env(env, "PRISMIC_DOCUMENT_API_URL"),
+        "PRISMIC_MIGRATION_API_BASE_URL": _read_env(
+            env, "PRISMIC_MIGRATION_API_BASE_URL"
+        ),
+        "PRISMIC_ASSET_API_BASE_URL": _read_env(env, "PRISMIC_ASSET_API_BASE_URL"),
+    }
+
+    untrusted_overrides: list[str] = []
+    for env_name, raw_url in overrides.items():
+        if not raw_url:
+            continue
+        if is_trusted_prismic_url(raw_url):
+            continue
+
+        host = _extract_url_host(raw_url) or "<unknown-host>"
+        logger.warning(
+            "%s points to a non-Prismic host (%s). This may expose credentials to untrusted endpoints.",
+            env_name,
+            host,
+        )
+        untrusted_overrides.append(env_name)
+
+    if config.enforce_trusted_endpoints and untrusted_overrides:
+        names = ", ".join(sorted(untrusted_overrides))
+        raise PrismicConfigurationError(
+            "PRISMIC_ENFORCE_TRUSTED_ENDPOINTS is enabled and untrusted endpoint "
+            f"overrides were detected: {names}"
         )
 
 
@@ -258,7 +390,9 @@ def load_prismic_client_config(
 ) -> PrismicClientConfig:
     """Load configuration and optionally validate required write credentials."""
 
-    config = PrismicClientConfig.from_env(env)
+    source = env if env is not None else os.environ
+    config = PrismicClientConfig.from_env(source)
+    _warn_and_validate_endpoint_overrides(config=config, env=source)
     if validate_credentials:
         validate_required_credentials(config)
     return config
@@ -500,7 +634,11 @@ class PrismicService:
         return self._asset_client
 
     @staticmethod
-    def _compose_query_param(*, document_type: str | None, q: Any | None) -> Any | None:
+    def _compose_query_param(
+        *,
+        document_type: str | None,
+        q: str | list[str] | None,
+    ) -> list[str] | str | None:
         """Compose the final Content API `q` parameter with optional type filter."""
 
         type_predicate = (
@@ -517,6 +655,96 @@ class PrismicService:
             return [type_predicate, *q]
 
         return [type_predicate, q]
+
+    def _normalize_q_input(self, q: Any | None) -> str | list[str] | None:
+        """Validate and normalize raw Content API `q` input."""
+
+        if q is None:
+            return None
+
+        if self.config.disable_raw_q:
+            raise PrismicConfigurationError(
+                "Raw q predicates are disabled by PRISMIC_DISABLE_RAW_Q"
+            )
+
+        if isinstance(q, str):
+            normalized = q.strip()
+            if not normalized:
+                raise ValueError("q must be a non-empty string or list of strings")
+            return normalized
+
+        if isinstance(q, list):
+            if not q:
+                raise ValueError("q list must not be empty")
+
+            normalized_items: list[str] = []
+            for item in q:
+                if not isinstance(item, str):
+                    raise ValueError("q must be a string or list of strings")
+                normalized = item.strip()
+                if not normalized:
+                    raise ValueError("q entries must be non-empty strings")
+                normalized_items.append(normalized)
+            return normalized_items
+
+        raise ValueError("q must be None, a string, or a list of strings")
+
+    def _resolve_upload_root(self) -> Path:
+        """Resolve and validate the configured upload root directory."""
+
+        raw_root = self.config.upload_root
+        if not raw_root:
+            raise PrismicConfigurationError(
+                "PRISMIC_UPLOAD_ROOT is required for media uploads"
+            )
+
+        try:
+            resolved_root = Path(raw_root).expanduser().resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise PrismicConfigurationError(
+                "PRISMIC_UPLOAD_ROOT must point to an existing directory"
+            ) from exc
+
+        if not resolved_root.is_dir():
+            raise PrismicConfigurationError(
+                "PRISMIC_UPLOAD_ROOT must point to a directory"
+            )
+
+        return resolved_root
+
+    def _resolve_upload_path(self, file_path: str) -> Path:
+        """Resolve upload file and enforce it stays within upload root."""
+
+        upload_root = self._resolve_upload_root()
+        candidate = Path(_ensure_non_empty(file_path, "file_path"))
+        if not candidate.is_absolute():
+            candidate = upload_root / candidate
+
+        try:
+            resolved_path = candidate.expanduser().resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise ValueError(
+                "file_path does not exist within PRISMIC_UPLOAD_ROOT"
+            ) from exc
+        except OSError as exc:
+            raise ValueError("file_path is invalid") from exc
+
+        try:
+            resolved_path.relative_to(upload_root)
+        except ValueError as exc:
+            raise ValueError(
+                "file_path must resolve to a location inside PRISMIC_UPLOAD_ROOT"
+            ) from exc
+
+        try:
+            mode = resolved_path.stat().st_mode
+        except OSError as exc:
+            raise ValueError("file_path could not be inspected") from exc
+
+        if not stat.S_ISREG(mode):
+            raise ValueError("file_path must reference a regular file")
+
+        return resolved_path
 
     @staticmethod
     def _encode_routes_param(routes: Any | None) -> str | None:
@@ -710,6 +938,22 @@ class PrismicService:
             "has_content_api_token": bool(self.config.content_api_token),
             "has_write_credentials": self._has_write_credentials(self.config),
             "has_asset_credentials": self._has_asset_credentials(self.config),
+            "endpoint_trust": {
+                "content": {
+                    "host": _extract_url_host(content_api_base_url) or None,
+                    "is_trusted": is_trusted_prismic_url(content_api_base_url),
+                },
+                "migration": {
+                    "host": _extract_url_host(migration_api_base_url) or None,
+                    "is_trusted": is_trusted_prismic_url(migration_api_base_url),
+                },
+                "asset": {
+                    "host": _extract_url_host(asset_api_base_url) or None,
+                    "is_trusted": is_trusted_prismic_url(asset_api_base_url),
+                },
+            },
+            "upload_root_configured": bool(self.config.upload_root),
+            "disable_raw_q": self.config.disable_raw_q,
         }
 
     def validate_write_document(self, document: DocumentWrite) -> None:
@@ -780,7 +1024,11 @@ class PrismicService:
         if lang:
             params["lang"] = lang
 
-        query_param = self._compose_query_param(document_type=document_type, q=q)
+        normalized_q = self._normalize_q_input(q)
+        query_param = self._compose_query_param(
+            document_type=document_type,
+            q=normalized_q,
+        )
         if query_param is not None:
             params["q"] = query_param
         if orderings and orderings.strip():
@@ -884,9 +1132,7 @@ class PrismicService:
         """Upload media to Prismic Asset API with optional metadata."""
 
         asset_client = self._ensure_asset_client()
-        resolved_path = Path(_ensure_non_empty(file_path, "file_path"))
-        if not resolved_path.is_file():
-            raise FileNotFoundError(f"file_path does not exist or is not a file: {resolved_path}")
+        resolved_path = self._resolve_upload_path(file_path)
 
         form_data: dict[str, str] = {}
         if notes is not None and notes.strip():

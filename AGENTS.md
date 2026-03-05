@@ -181,6 +181,9 @@ Use this checklist when adding any new tool.
 - Respect explicit `ref` when supplied; otherwise resolve master ref.
 - Document auth expectations clearly: reading non-master refs may require
   `PRISMIC_CONTENT_API_TOKEN` depending on repository API visibility settings.
+- Treat raw `q` as trusted pass-through input. Do not source `q` directly from
+  untrusted prompt text. If stricter behavior is needed, use
+  `PRISMIC_DISABLE_RAW_Q=1`.
 
 ### 3.1) Migration vs Content readback semantics
 
@@ -191,6 +194,13 @@ Use this checklist when adding any new tool.
   `prismic_get_refs`).
 - Do not imply that successful upsert guarantees immediate master-read
   visibility; call out release/publish dependency in tool and README docs.
+
+### 3.2) Media upload safety
+
+- `prismic_add_media` must enforce `PRISMIC_UPLOAD_ROOT` for path safety.
+- Ensure resolved upload paths stay within root after symlink resolution.
+- Reject traversal/out-of-root paths and non-regular files with non-sensitive
+  errors (no host filesystem leakage).
 
 ### 4) Add tests in both layers
 

@@ -8,10 +8,13 @@ from pydantic import ValidationError
 
 from prismic_content_mcp.models import DocumentWrite, PrismicDocument
 from prismic_content_mcp.prismic import (
+    PrismicApiError,
     PrismicClientConfig,
     PrismicConfigurationError,
     PrismicService,
+    is_trusted_prismic_url,
     load_prismic_client_config,
+    sanitize_url_query_parameters,
     validate_required_asset_credentials,
     validate_required_credentials,
 )
@@ -33,6 +36,9 @@ def test_load_prismic_client_config_derives_default_content_url() -> None:
     assert config.migration_min_interval_seconds == 2.5
     assert config.retry_max_attempts == 5
     assert config.max_batch_size == 50
+    assert config.enforce_trusted_endpoints is False
+    assert config.upload_root is None
+    assert config.disable_raw_q is False
 
 
 def test_load_prismic_client_config_defaults_blank_operational_values() -> None:
@@ -91,6 +97,19 @@ def test_load_prismic_client_config_respects_document_api_url_override() -> None
     assert config.content_api_base_url == "https://override.example.com/api/v2"
 
 
+def test_load_prismic_client_config_reads_upload_root_and_q_safe_mode() -> None:
+    config = load_prismic_client_config(
+        env={
+            "PRISMIC_REPOSITORY": "demo-repo",
+            "PRISMIC_UPLOAD_ROOT": "/tmp/uploads",
+            "PRISMIC_DISABLE_RAW_Q": "1",
+        }
+    )
+
+    assert config.upload_root == "/tmp/uploads"
+    assert config.disable_raw_q is True
+
+
 def test_load_prismic_client_config_derives_content_url_from_cdn_host_repository() -> None:
     config = load_prismic_client_config(
         env={
@@ -101,6 +120,71 @@ def test_load_prismic_client_config_derives_content_url_from_cdn_host_repository
     )
 
     assert config.content_api_base_url == "https://demo-repo.cdn.prismic.io/api/v2"
+
+
+def test_load_prismic_client_config_strict_mode_rejects_untrusted_override() -> None:
+    with pytest.raises(
+        PrismicConfigurationError,
+        match="PRISMIC_ENFORCE_TRUSTED_ENDPOINTS",
+    ):
+        load_prismic_client_config(
+            env={
+                "PRISMIC_REPOSITORY": "demo-repo",
+                "PRISMIC_ENFORCE_TRUSTED_ENDPOINTS": "1",
+                "PRISMIC_DOCUMENT_API_URL": "https://evil.example.com/api/v2",
+            }
+        )
+
+
+def test_load_prismic_client_config_warns_on_untrusted_override(caplog) -> None:
+    caplog.set_level("WARNING")
+
+    config = load_prismic_client_config(
+        env={
+            "PRISMIC_REPOSITORY": "demo-repo",
+            "PRISMIC_DOCUMENT_API_URL": "https://evil.example.com/api/v2",
+        }
+    )
+
+    assert config.content_api_base_url == "https://evil.example.com/api/v2"
+    assert "non-Prismic host" in caplog.text
+    assert "PRISMIC_DOCUMENT_API_URL" in caplog.text
+
+
+def test_sanitize_url_query_parameters_redacts_sensitive_keys() -> None:
+    url = (
+        "https://demo.cdn.prismic.io/api/v2/documents/search?"
+        "access_token=abc123&foo=bar&api_key=key123&Authorization=secret"
+    )
+    sanitized = sanitize_url_query_parameters(url)
+
+    assert "access_token=%5BREDACTED%5D" in sanitized
+    assert "api_key=%5BREDACTED%5D" in sanitized
+    assert "Authorization=%5BREDACTED%5D" in sanitized
+    assert "foo=bar" in sanitized
+    assert "abc123" not in sanitized
+    assert "key123" not in sanitized
+    assert "secret" not in sanitized
+
+
+def test_is_trusted_prismic_url_matches_expected_hosts() -> None:
+    assert is_trusted_prismic_url("https://migration.prismic.io") is True
+    assert is_trusted_prismic_url("https://demo-repo.cdn.prismic.io/api/v2") is True
+    assert is_trusted_prismic_url("https://evil.example.com") is False
+
+
+def test_prismic_api_error_redacts_sensitive_query_params_in_url() -> None:
+    request = httpx.Request(
+        "GET",
+        "https://demo.cdn.prismic.io/api/v2/documents/search?access_token=abc123&foo=bar",
+    )
+    response = httpx.Response(401, request=request, json={"error": "unauthorized"})
+
+    error = PrismicApiError.from_response(response)
+
+    assert "access_token=%5BREDACTED%5D" in error.url
+    assert "foo=bar" in error.url
+    assert "abc123" not in error.url
 
 
 @pytest.mark.asyncio
@@ -117,6 +201,9 @@ async def test_build_content_client_derives_base_url_when_content_url_blank() ->
         retry_max_attempts=5,
         write_type_allowlist=frozenset(),
         max_batch_size=50,
+        enforce_trusted_endpoints=False,
+        upload_root=None,
+        disable_raw_q=False,
     )
 
     client = PrismicService._build_content_client(config=config, timeout_seconds=5.0)
@@ -140,6 +227,9 @@ async def test_get_repository_context_returns_non_secret_metadata() -> None:
         retry_max_attempts=5,
         write_type_allowlist=frozenset(),
         max_batch_size=50,
+        enforce_trusted_endpoints=False,
+        upload_root=None,
+        disable_raw_q=False,
     )
     content_client = httpx.AsyncClient(base_url="https://demo-repo.cdn.prismic.io/api/v2")
 
@@ -153,6 +243,11 @@ async def test_get_repository_context_returns_non_secret_metadata() -> None:
     assert context["has_content_api_token"] is True
     assert context["has_write_credentials"] is False
     assert context["has_asset_credentials"] is False
+    assert context["endpoint_trust"]["content"]["is_trusted"] is True
+    assert context["endpoint_trust"]["migration"]["is_trusted"] is True
+    assert context["endpoint_trust"]["asset"]["is_trusted"] is True
+    assert context["upload_root_configured"] is False
+    assert context["disable_raw_q"] is False
 
 
 def test_validate_required_credentials_raises_for_missing_values() -> None:
@@ -168,6 +263,9 @@ def test_validate_required_credentials_raises_for_missing_values() -> None:
         retry_max_attempts=5,
         write_type_allowlist=frozenset(),
         max_batch_size=50,
+        enforce_trusted_endpoints=False,
+        upload_root=None,
+        disable_raw_q=False,
     )
 
     with pytest.raises(PrismicConfigurationError) as exc:
@@ -192,6 +290,9 @@ def test_validate_required_asset_credentials_raises_for_missing_values() -> None
         retry_max_attempts=5,
         write_type_allowlist=frozenset(),
         max_batch_size=50,
+        enforce_trusted_endpoints=False,
+        upload_root=None,
+        disable_raw_q=False,
     )
 
     with pytest.raises(PrismicConfigurationError) as exc:

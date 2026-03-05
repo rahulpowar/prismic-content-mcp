@@ -2,17 +2,33 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 from .models import DocumentWrite
-from .prismic import PrismicService, load_prismic_client_config
+from .prismic import (
+    PrismicApiError,
+    PrismicConfigurationError,
+    PrismicService,
+    load_prismic_client_config,
+    sanitize_url_query_parameters,
+)
 
 
 TransportMode = Literal["stdio", "streamable-http"]
+RECOVERABLE_BATCH_EXCEPTIONS = (
+    PrismicApiError,
+    PrismicConfigurationError,
+    ValueError,
+    httpx.HTTPError,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -40,6 +56,77 @@ def _document_reference(document: DocumentWrite, index: int) -> str:
     if document.uid:
         return f"{document.type}:{document.uid}"
     return f"index:{index}"
+
+
+def _is_public_bind_host(host: str) -> bool:
+    """Return True for wildcard hosts that expose network listeners."""
+
+    normalized = host.strip().lower()
+    return normalized in {"0.0.0.0", "::", "[::]"}
+
+
+def _warn_streamable_http_exposure(config: RuntimeConfig) -> None:
+    """Emit explicit security guidance when running HTTP transport."""
+
+    if config.transport != "streamable-http":
+        return
+
+    if _is_public_bind_host(config.host):
+        logger.warning(
+            "PRISMIC_MCP_TRANSPORT=streamable-http is running on host %s. "
+            "This exposes MCP tools over the network without built-in auth. "
+            "Use localhost, network isolation, and/or authenticated reverse proxy.",
+            config.host,
+        )
+        return
+
+    logger.warning(
+        "PRISMIC_MCP_TRANSPORT=streamable-http has no built-in authentication. "
+        "Keep host bound to localhost or place behind authenticated network boundaries."
+    )
+
+
+def _safe_batch_error(exc: Exception) -> dict[str, Any]:
+    """Convert known per-item exceptions into non-sensitive error payloads."""
+
+    if isinstance(exc, PrismicApiError):
+        return {
+            "type": "PrismicApiError",
+            "message": "Prismic API request failed",
+            "status_code": exc.status_code,
+            "url": exc.url,
+        }
+
+    if isinstance(exc, PrismicConfigurationError):
+        return {
+            "type": "PrismicConfigurationError",
+            "message": str(exc),
+        }
+
+    if isinstance(exc, ValueError):
+        return {
+            "type": "ValueError",
+            "message": "Input validation failed",
+        }
+
+    if isinstance(exc, httpx.HTTPError):
+        request_url = (
+            sanitize_url_query_parameters(str(exc.request.url))
+            if exc.request is not None
+            else None
+        )
+        payload: dict[str, Any] = {
+            "type": exc.__class__.__name__,
+            "message": "HTTP transport error while calling upstream API",
+        }
+        if request_url:
+            payload["url"] = request_url
+        return payload
+
+    return {
+        "type": exc.__class__.__name__,
+        "message": "Unexpected error",
+    }
 
 
 def load_runtime_config() -> RuntimeConfig:
@@ -137,6 +224,9 @@ async def handle_prismic_get_documents(
     Query behavior:
     - `ref` overrides the default master ref resolution (useful for previews/drafts).
     - `q` is passed directly to the Content API `q` parameter.
+      Treat `q` as trusted input only (do not forward untrusted prompt text).
+    - If `PRISMIC_DISABLE_RAW_Q=1`, raw `q` is rejected and only server-built
+      predicates (for example via `type`) are allowed.
     - `orderings` is passed directly to the Content API `orderings` parameter.
     - `routes` is passed to the Content API `routes` parameter (route resolvers).
     - `type` is a convenience mapping to `[[at(document.type,"<type>")]]`.
@@ -303,14 +393,14 @@ async def handle_prismic_upsert_documents(
                         "dry_run": dry_run,
                     }
                 )
-            except Exception as exc:
+            except RECOVERABLE_BATCH_EXCEPTIONS as exc:
                 failed += 1
                 results.append(
                     {
                         "input_ref": input_ref,
                         "ok": False,
                         "id": None,
-                        "error": str(exc),
+                        "error": _safe_batch_error(exc),
                         "dry_run": dry_run,
                     }
                 )
@@ -468,6 +558,8 @@ def create_server(*, name: str = "prismic-content-mcp") -> FastMCP:
         Uploads `file_path` using `multipart/form-data` to `POST /assets`.
         Optional metadata maps to Asset API fields: `notes`, `credits`, `alt`.
         Requires `PRISMIC_REPOSITORY` and `PRISMIC_WRITE_API_TOKEN`.
+        Security: `PRISMIC_UPLOAD_ROOT` must be set; upload paths must resolve
+        within that directory (traversal and symlink escapes are blocked).
         """
 
         return await handle_prismic_add_media(
@@ -531,6 +623,7 @@ def run_server(config: RuntimeConfig | None = None) -> None:
     """Run the server in stdio or streamable-http mode."""
 
     effective_config = config or load_runtime_config()
+    _warn_streamable_http_exposure(effective_config)
     server = create_server()
 
     if effective_config.transport == "stdio":

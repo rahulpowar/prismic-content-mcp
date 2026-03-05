@@ -32,6 +32,9 @@ def make_config(
         retry_max_attempts=max_attempts,
         write_type_allowlist=frozenset(),
         max_batch_size=50,
+        enforce_trusted_endpoints=False,
+        upload_root=None,
+        disable_raw_q=False,
     )
 
 

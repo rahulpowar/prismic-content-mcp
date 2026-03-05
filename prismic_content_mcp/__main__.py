@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from urllib.parse import quote, quote_plus
 
 from .server import run_server
 
@@ -21,16 +22,44 @@ class SecretRedactionFilter(logging.Filter):
 
     def __init__(self, secrets: list[str]) -> None:
         super().__init__()
-        self._secrets = [secret for secret in secrets if secret]
+        self._secrets = self._build_secret_variants(secrets)
+
+    @staticmethod
+    def _build_secret_variants(secrets: list[str]) -> list[str]:
+        """Build literal and URL-encoded tokens for reliable redaction."""
+
+        variants: list[str] = []
+        seen: set[str] = set()
+
+        for secret in secrets:
+            normalized = secret.strip()
+            # Avoid broad accidental redaction for very short values.
+            if len(normalized) < 6:
+                continue
+
+            candidates = {
+                normalized,
+                quote_plus(normalized, safe=""),
+                quote(normalized, safe=""),
+            }
+            for candidate in candidates:
+                if not candidate or candidate in seen:
+                    continue
+                seen.add(candidate)
+                variants.append(candidate)
+
+        return variants
 
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
+        redacted = message
         for secret in self._secrets:
-            if secret in message:
-                message = message.replace(secret, "[REDACTED]")
+            if secret in redacted:
+                redacted = redacted.replace(secret, "[REDACTED]")
 
-        record.msg = message
-        record.args = ()
+        if redacted != message:
+            record.msg = redacted
+            record.args = ()
         return True
 
 

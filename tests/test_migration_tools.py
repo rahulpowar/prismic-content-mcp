@@ -31,6 +31,9 @@ def make_test_config(**overrides) -> PrismicClientConfig:
         "retry_max_attempts": 3,
         "write_type_allowlist": frozenset(),
         "max_batch_size": 50,
+        "enforce_trusted_endpoints": False,
+        "upload_root": None,
+        "disable_raw_q": False,
     }
     defaults.update(overrides)
     return PrismicClientConfig(**defaults)
@@ -188,11 +191,18 @@ class FakeWriteService:
         self.upsert_calls += 1
         if document.uid == "bad":
             raise ValueError("bad document")
+        if document.uid == "explode":
+            raise RuntimeError("unexpected crash")
         return {
             "id": document.id or f"gen-{self.upsert_calls}",
             "status": "updated" if document.id else "created",
             "raw": {"ok": True},
         }
+
+
+class LeakyFakeWriteService(FakeWriteService):
+    async def upsert_document(self, document: DocumentWrite):
+        raise ValueError("token=super-secret-token")
 
 
 def make_write_service_factory(service: FakeWriteService):
@@ -238,3 +248,54 @@ async def test_handle_upsert_documents_returns_batch_summary() -> None:
     assert result["summary"] == {"created": 1, "updated": 1, "failed": 1}
     assert len(result["results"]) == 3
     assert result["results"][2]["ok"] is False
+    assert result["results"][2]["error"]["type"] == "ValueError"
+    assert result["results"][2]["error"]["message"] == "Input validation failed"
+
+
+@pytest.mark.asyncio
+async def test_handle_upsert_documents_fail_fast_reraises_recoverable_error() -> None:
+    service = FakeWriteService()
+    docs = [
+        make_document(uid="good-1"),
+        make_document(uid="bad"),
+    ]
+
+    with pytest.raises(ValueError, match="bad document"):
+        await handle_prismic_upsert_documents(
+            documents=docs,
+            fail_fast=True,
+            dry_run=False,
+            service_factory=make_write_service_factory(service),
+        )
+
+
+@pytest.mark.asyncio
+async def test_handle_upsert_documents_unexpected_error_bubbles() -> None:
+    service = FakeWriteService()
+    docs = [make_document(uid="explode")]
+
+    with pytest.raises(RuntimeError, match="unexpected crash"):
+        await handle_prismic_upsert_documents(
+            documents=docs,
+            fail_fast=False,
+            dry_run=False,
+            service_factory=make_write_service_factory(service),
+        )
+
+
+@pytest.mark.asyncio
+async def test_handle_upsert_documents_error_payload_omits_raw_secret() -> None:
+    service = LeakyFakeWriteService()
+    docs = [make_document(uid="bad")]
+
+    result = await handle_prismic_upsert_documents(
+        documents=docs,
+        fail_fast=False,
+        dry_run=False,
+        service_factory=make_write_service_factory(service),
+    )
+
+    assert result["summary"]["failed"] == 1
+    error_payload = result["results"][0]["error"]
+    assert error_payload["message"] == "Input validation failed"
+    assert "super-secret-token" not in str(error_payload)

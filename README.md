@@ -63,36 +63,27 @@ For stdio MCP client configs, use:
 - `command`: `uvx`
 - `args`: `["--from", "git+https://github.com/rahulpowar/prismic-content-mcp.git", "prismic-content-mcp"]`
 
-Install into a local virtualenv:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -U pip
-python3 -m pip install "git+https://github.com/rahulpowar/prismic-content-mcp.git"
-```
-
 Clone only for local development:
 
 ```bash
 git clone https://github.com/rahulpowar/prismic-content-mcp.git
 cd prismic-content-mcp
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -U pip
-python3 -m pip install -e .
+uv sync --frozen --extra dev
 ```
+
+`uv sync --frozen` is the canonical deterministic install path for this repo
+and will fail if `uv.lock` is out of date with `pyproject.toml`.
 
 Run from a local checkout:
 
 ```bash
-python -m prismic_content_mcp
+uv run prismic-content-mcp
 ```
 
 For development/test:
 
 ```bash
-python3 -m pip install -e '.[dev]'
+uv run pytest -q
 ```
 
 ## Quickstart (LLM Clients)
@@ -102,6 +93,12 @@ This MCP supports both transports:
 - `stdio`: best for local clients (`Claude Desktop`, `Codex`, `Claude Code`)
 - `streamable-http`: required for remote/web clients (`ChatGPT`, `Claude` connectors)
 
+Security note:
+
+- `streamable-http` has no built-in authentication. Prefer `stdio` for local use.
+- If you must use HTTP transport, bind `PRISMIC_MCP_HOST=127.0.0.1` or place the
+  server behind authenticated network boundaries (reverse proxy / private network).
+
 Use these env vars in all examples:
 
 ```bash
@@ -110,6 +107,9 @@ export PRISMIC_REPOSITORY=your-repo
 
 # Optional for private content API access
 export PRISMIC_CONTENT_API_TOKEN=your-content-token
+
+# Required for media upload path safety (must be an existing directory)
+export PRISMIC_UPLOAD_ROOT=/absolute/path/allowed-for-upload-files
 
 # Required for media tools and migration write tools
 export PRISMIC_WRITE_API_TOKEN=your-write-token
@@ -247,10 +247,13 @@ Client docs:
 | `PRISMIC_REPOSITORY` | _none_ | Read: usually yes, Write: yes | Repository name (recommended). Used to derive Content API URL if not provided. |
 | `PRISMIC_DOCUMENT_API_URL` | Derived from repository | No | Optional override for Content API base URL. |
 | `PRISMIC_CONTENT_API_TOKEN` | _none_ | No | Needed for private repos and often required to read non-master refs (preview/release) when API visibility is restricted. |
+| `PRISMIC_DISABLE_RAW_Q` | `false` | No | When true (`1/true`), rejects raw `q` predicates; only server-generated predicates (for example `type`) are allowed. |
 | `PRISMIC_WRITE_API_TOKEN` | _none_ | Media/Write | Required for media tools and Migration API write tools. |
 | `PRISMIC_MIGRATION_API_KEY` | _none_ | Write only | Required only for write tools. |
 | `PRISMIC_MIGRATION_API_BASE_URL` | `https://migration.prismic.io` | No | Optional Migration API override. |
 | `PRISMIC_ASSET_API_BASE_URL` | `https://asset-api.prismic.io` | No | Optional Asset API override. |
+| `PRISMIC_UPLOAD_ROOT` | _none_ | Media upload | Required for `prismic_add_media`; upload file paths must resolve within this directory. |
+| `PRISMIC_ENFORCE_TRUSTED_ENDPOINTS` | `false` | No | When true (`1/true`), startup fails if endpoint override env vars point to non-`*.prismic.io` hosts. |
 
 ### Write Safety Controls
 
@@ -284,6 +287,13 @@ Result:
 - `https://your-repo.cdn.prismic.io/api/v2`
 
 If you prefer, you may explicitly set `PRISMIC_DOCUMENT_API_URL` and skip derivation.
+
+Security behavior for endpoint overrides:
+
+- Non-Prismic overrides for `PRISMIC_DOCUMENT_API_URL`,
+  `PRISMIC_MIGRATION_API_BASE_URL`, or `PRISMIC_ASSET_API_BASE_URL` emit a
+  startup warning.
+- Set `PRISMIC_ENFORCE_TRUSTED_ENDPOINTS=1` to block startup on such overrides.
 
 ## MCP Tools
 
@@ -389,6 +399,10 @@ preview/draft ref). If omitted, the server resolves and uses the master ref.
 Depending on repository API visibility settings, reading non-master refs may
 require `PRISMIC_CONTENT_API_TOKEN`.
 `q` is passed through to Prismic Content API predicates.
+Treat `q` as trusted raw input only; do not forward untrusted prompt/user text
+directly into `q`.
+Supported `q` shapes are: `null`, string, or array of strings.
+If `PRISMIC_DISABLE_RAW_Q=1`, raw `q` input is rejected.
 `orderings` is passed through to Prismic Content API sort clauses.
 `routes` is passed through to Prismic Content API route resolvers.
 
@@ -550,6 +564,7 @@ Requires:
 
 - `PRISMIC_REPOSITORY`
 - `PRISMIC_WRITE_API_TOKEN`
+- `PRISMIC_UPLOAD_ROOT` (file must resolve inside this directory; symlink and traversal escapes are blocked)
 
 Example input:
 
