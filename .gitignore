@@ -1,4 +1,64 @@
+# Beads / bd local state (do not commit local task DB/runtime state)
+.beads/dolt/
+.beads/dolt-access.lock
+.beads/dolt-server.pid
+.beads/dolt-server.port
+.beads/dolt-server.activity
+.beads/dolt-server.log
+.beads/dolt-server.lock
+.beads/dolt-monitor.pid
+.beads/issues.jsonl
+.beads/events.jsonl
+.beads/interactions.jsonl
+.beads/bd.sock
+.beads/bd.sock.startlock
+.beads/sync-state.json
+.beads/last-touched
+.beads/.local_version
+.beads/.sync.lock
+.beads/export-state/
+.beads/redirect
+.beads/ephemeral.sqlite3
+.beads/ephemeral.sqlite3-journal
+.beads/ephemeral.sqlite3-wal
+.beads/ephemeral.sqlite3-shm
 
-# Dolt database files (added by bd init)
+# Dolt / DB files
 .dolt/
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor / OS files
+.DS_Store
+.idea/
+.vscode/
+.claude/
+
+# Local env files
+.env
+.env.*
+
+# Logs
+*.log

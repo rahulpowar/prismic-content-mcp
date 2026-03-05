@@ -148,3 +148,79 @@ For more details, see README.md and docs/QUICKSTART.md.
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+
+## Adding New MCP Tools (prismic-content-mcp)
+
+Use this checklist when adding any new tool.
+
+### 1) Keep architecture consistent
+
+- Put HTTP/business logic in `prismic_content_mcp/prismic.py` on `PrismicService`.
+- Put MCP handler wrappers in `prismic_content_mcp/server.py` as `handle_prismic_*`.
+- Register tool functions in `create_server()` in `prismic_content_mcp/server.py`.
+- Keep handlers thin: validate/route inputs and call service methods.
+- Bubble upstream/validation errors clearly; do not add fallback branching.
+
+### 2) Naming and response conventions
+
+- Tool names use `prismic_*` and should be explicit (`prismic_get_*`, `prismic_add_*`, `prismic_upsert_*`).
+- Handler names mirror tool names (`handle_prismic_get_types`, etc.).
+- Return objects (not raw lists) with stable keys, for example:
+  - `{"refs": [...]}`
+  - `{"types": [...]}`
+  - `{"media": {...}}`
+- For list-like outputs, normalize shape in service layer when possible.
+
+### 3) Content API patterns
+
+- Reuse Content API root (`GET /api/v2`) for repository metadata (`refs`, `types`, languages, forms).
+- Reuse shared root-fetch helpers rather than duplicating calls.
+- For document reads, continue using `get_documents()` and convenience mappings:
+  - `type` -> `[[at(document.type,"<type>")]]`
+  - merge `type` predicate with `q` if both are present.
+- Respect explicit `ref` when supplied; otherwise resolve master ref.
+- Document auth expectations clearly: reading non-master refs may require
+  `PRISMIC_CONTENT_API_TOKEN` depending on repository API visibility settings.
+
+### 3.1) Migration vs Content readback semantics
+
+- Migration API is write-focused for this MCP (create/update), not the source of
+  document reads.
+- After migration upserts, read-back is done through Content API using an
+  explicit `ref` (typically a release ref from `prismic_get_releases` or
+  `prismic_get_refs`).
+- Do not imply that successful upsert guarantees immediate master-read
+  visibility; call out release/publish dependency in tool and README docs.
+
+### 4) Add tests in both layers
+
+- Handler-level tests: `tests/test_content_tools.py`
+  - Verify handler calls the right service method.
+  - Verify response key/shape.
+- Service-level HTTP behavior tests: `tests/test_content_ref_resolution.py`
+  - Mock Content API responses and assert parsing/normalization.
+  - Add negative tests for missing/invalid required fields.
+- Keep tests deterministic and focused on behavior contracts.
+
+### 5) Update docs every time
+
+- Update `README.md` in all relevant places:
+  - `Example Prompts` section
+  - `What You Get` summary when capability scope changes
+  - `MCP Tools` section with clear description and output shape
+- Tool docs should include usage hints and native Prismic mapping details.
+
+### 6) Validate before handoff
+
+- Run test suite:
+  - `python3 -m pytest -q`
+- If live tests are needed, run explicitly with env flags (see README).
+- Confirm no accidental behavior changes in existing tools.
+
+### 7) Typical minimal diff for a new read tool
+
+1. Add `PrismicService` method in `prismic.py`.
+2. Add `handle_prismic_*` wrapper in `server.py`.
+3. Register `@server.tool(name="prismic_*")` in `create_server()`.
+4. Add/extend tests in `test_content_tools.py` and `test_content_ref_resolution.py`.
+5. Update README examples + MCP tool docs.
