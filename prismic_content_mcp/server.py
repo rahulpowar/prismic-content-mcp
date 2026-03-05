@@ -428,6 +428,8 @@ def create_server(*, name: str = "prismic-content-mcp") -> FastMCP:
 
         Returns repository and API base URL metadata (no secrets) so agents can
         identify which Prismic repository they are operating on.
+        Recommended first call in a session to confirm repository and auth
+        posture before running read/write workflows.
         """
 
         return await handle_prismic_get_repository_context()
@@ -440,6 +442,8 @@ def create_server(*, name: str = "prismic-content-mcp") -> FastMCP:
         preview, or release refs), not per-document refs.
         Use returned `ref` values with `prismic_get_documents` or
         `prismic_get_document` to read content for that version pointer.
+        Efficiency tip: call once, cache the chosen `ref`, and pass it explicitly
+        to subsequent read calls to avoid per-call implicit master-ref resolution.
         """
 
         return await handle_prismic_get_refs()
@@ -450,6 +454,9 @@ def create_server(*, name: str = "prismic-content-mcp") -> FastMCP:
 
         Returns content type metadata from the Content API `types` map as
         normalized entries with `id` and `label`.
+        Typical sequencing: call once, then iterate type ids with
+        `prismic_get_documents(type=..., page_size=1)` when you only need counts
+        or existence checks.
         """
 
         return await handle_prismic_get_types()
@@ -462,6 +469,8 @@ def create_server(*, name: str = "prismic-content-mcp") -> FastMCP:
         `isMasterRef != true`.
         Use these refs with read tools (`ref` parameter) to inspect release
         content through Content API.
+        Efficiency tip: pick the release `ref` once and reuse it across all read
+        queries in the same analysis.
         """
 
         return await handle_prismic_get_releases()
@@ -490,6 +499,13 @@ def create_server(*, name: str = "prismic-content-mcp") -> FastMCP:
         `[document.first_publication_date desc]`).
         Use `routes` for Content API route resolvers to populate the `url` field
         (for example `[{"type":"page","path":"/:uid"}]`).
+        Efficiency tips:
+        - For large scans: call `prismic_get_refs` once and pass `ref` explicitly.
+        - For counts/existence checks: set `page_size=1` and read `total_results`.
+        - Only pass `routes` when you need populated `url` fields.
+        - Paginate with `page` + `next_page` for full exports.
+        Codex js_repl tip: `codex.tool(...)` wraps tool output; read payload from
+        `result.Ok.structuredContent`.
         """
         return await handle_prismic_get_documents(
             type=type,
@@ -515,6 +531,8 @@ def create_server(*, name: str = "prismic-content-mcp") -> FastMCP:
         Use `ref` to read a specific preview/release version pointer. Depending
         on repository API visibility settings, non-master refs may require
         `PRISMIC_CONTENT_API_TOKEN`.
+        Prefer this over `prismic_get_documents` when you already have an exact
+        id or type+uid target.
         """
 
         return await handle_prismic_get_document(
